@@ -1,0 +1,42 @@
+/* Custom scrollbar for a cleaner look in the modal */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 4px;
+}
+
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* style.css */
+@keyframes crownRevolve {
+  0% { transform: perspective(400px) rotateY(0deg) scale(1); }
+  50% { transform: perspective(400px) rotateY(180deg) scale(1.2); }
+  100% { transform: perspective(400px) rotateY(360deg) scale(1); }
+}
+
+@keyframes cyanCelebrationOverlay {
+  0% { background-color: rgba(6, 182, 212, 0); }
+  20% { background-color: rgba(6, 182, 212, 0.15); }
+  80% { background-color: rgba(6, 182, 212, 0.15); }
+  100% { background-color: rgba(6, 182, 212, 0); }
+}
+
+.animate-crown {
+  display: inline-block;
+  transform-style: preserve-3d;
+  animation: crownRevolve 2s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}
+
+.animate-cyan-bg {
+  animation: cyanCelebrationOverlay 2.5s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+}

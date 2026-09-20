@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Exam Board</title>
+
+  <!-- Tailwind CSS for styling -->
+  <script src="https://cdn.tailwindcss.com"></script>
+
+  <!-- External CSS -->
+  <link rel="stylesheet" href="style.css">
+
+  <!-- React and ReactDOM -->
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+
+  <!-- Babel for parsing JSX in the browser -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- MathJax Configuration for LaTeX rendering -->
+  <script>
+    MathJax = {
+      tex: {
+        inlineMath: [['$', '$'], ['\\(', '\\)']],
+        displayMath: [['$$', '$$'], ['\\[', '\\]']],
+        processEscapes: true
+      },
+      startup: {
+        typeset: false
+      }
+    };
+  </script>
+  <script id="MathJax-script" async src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+  <!-- Firebase App (the core SDK) and Firestore -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+  <!-- Firebase App (the core SDK) and Firestore -->
+  <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-storage-compat.js"></script>
+  <!-- Add this just above the closing </head> tag in index_2.html -->
+  <link rel="icon" type="image/png" href="a.png" />
+</head>
+
+<body class="bg-gray-50 font-sans">
+  <div id="root"></div>
+  <!-- Auth Container -->
+  <div id="auth-container" class="flex items-center gap-4">
+    <!-- Logged Out State -->
+    <button id="btn-login"
+      class="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-medium transition-colors hidden">
+      Sign in with Google
+    </button>
+
+    <!-- Logged In State -->
+    <div id="user-profile" class="hidden flex items-center gap-3">
+      <img id="user-avatar" src="" alt="User Avatar"
+        class="w-8 h-8 rounded-full border border-gray-600 dark:border-gray-400">
+      <span id="user-name" class="text-sm font-semibold text-gray-800 dark:text-gray-200"></span>
+      <button id="btn-logout"
+        class="px-3 py-1.5 bg-red-500 hover:bg-red-600 dark:bg-red-600 dark:hover:bg-red-700 text-white rounded-md text-sm transition-colors">
+        Logout
+      </button>
+    </div>
+  </div>
+  <!-- External React/JSX Script -->
+  <script type="text/babel" src="script.js"></script>
+</body>
+
+</html>
