@@ -711,9 +711,27 @@ function App() {
             setIsDeleting(false);
         }
     };
-    const handleSelectExam = (exam) => {
-        setActiveExam(exam);
-        if (exam.type === 'UAT') {
+    const shuffleArray = (array) => {
+    const arr = [...array];
+    for (let i = arr.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+    return arr;
+};
+
+const handleSelectExam = (exam) => {
+    let shuffledQuestions = [...(exam.questions || [])];
+    if (exam.type === 'UAT') {
+        const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
+        const mathPart = shuffleArray(shuffledQuestions.slice(55));
+        shuffledQuestions = [...englishPart, ...mathPart];
+    } else {
+        shuffledQuestions = shuffleArray(shuffledQuestions);
+    }
+
+    setActiveExam({ ...exam, questions: shuffledQuestions });
+    if (exam.type === 'UAT') {
             setUatSection('english');
             setInputHours(1);
             setInputMinutes(0);
