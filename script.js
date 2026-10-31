@@ -33,9 +33,8 @@ const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
             const img = new Image();
             img.src = e.target.result;
             img.onload = () => {
-                // Automatically resize & compress the image so it fits into Firestore
                 const canvas = document.createElement('canvas');
-                const MAX_WIDTH = 800; // Resize large images to a max width of 800px
+                const MAX_WIDTH = 800;
                 let width = img.width;
                 let height = img.height;
 
@@ -49,7 +48,6 @@ const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
                 const ctx = canvas.getContext('2d');
                 ctx.drawImage(img, 0, 0, width, height);
 
-                // Convert canvas image to compressed JPEG string (70% quality)
                 const compressedBase64 = canvas.toDataURL('image/jpeg', 0.7);
                 onUploadSuccess(compressedBase64);
                 setIsProcessing(false);
@@ -147,7 +145,9 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
         if (lines.length < 2) return;
 
         let questionText = "";
+        let qType = "mcq";
         const options = [];
+        const matchingPairs = [];
         let correctAnswer = "";
         let explanation = "";
         let passageTitle = defaultPassageTitle || "";
@@ -156,16 +156,25 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
         let image = defaultBlockImage || "";
 
         lines.forEach(line => {
-            const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*([A-D])/i);
+            const typeMatch = line.match(/^Type[:\s]*(mcq|tf|true_false|fill|blank|matching|short)/i);
+            const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*(.+)/i);
             const optMatch = line.match(/^([A-D])[\.\)]\s*(.+)/i);
+            const matchPairMatch = line.match(/^([1-9])[\.\)]\s*(.+?)\s*<->\s*(.+)/i);
             const expMatch = line.match(/^(?:Explanation|Exp)[:\s]*(.+)/i);
             const pTitleMatch = line.match(/^(?:Passage Title|Title)[:\s]*(.+)/i);
             const pHtmlMatch = line.match(/^(?:Passage HTML|HTML Passage|Table)[:\s]*(.+)/i);
             const pMatch = line.match(/^(?:Passage)[:\s]*(.+)/i);
             const imgMatch = line.match(/^(?:Image|Img)[:\s]*(.+)/i);
 
-            if (ansMatch) {
-                correctAnswer = ansMatch[1].toUpperCase();
+            if (typeMatch) {
+                const t = typeMatch[1].toLowerCase();
+                if (t.includes('tf') || t.includes('true')) qType = 'true_false';
+                else if (t.includes('fill') || t.includes('blank')) qType = 'fill_blank';
+                else if (t.includes('match')) qType = 'matching';
+                else if (t.includes('short')) qType = 'short_answer';
+                else qType = 'mcq';
+            } else if (ansMatch) {
+                correctAnswer = ansMatch[1].trim();
             } else if (expMatch) {
                 explanation = expMatch[1].trim();
             } else if (pTitleMatch) {
@@ -177,7 +186,9 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
                 passage = pMatch[1].trim();
             } else if (imgMatch) {
                 image = imgMatch[1].trim();
-            } else if (optMatch) {
+            } else if (qType === 'matching' && matchPairMatch) {
+                matchingPairs.push({ id: matchPairMatch[1], left: matchPairMatch[2], right: matchPairMatch[3] });
+            } else if (optMatch && qType === 'mcq') {
                 options.push({
                     id: optMatch[1].toUpperCase(),
                     text: optMatch[2]
@@ -187,12 +198,23 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
             }
         });
 
-        if (questionText && options.length > 0) {
+        if (qType === 'mcq' && options.length === 0 && (questionText.toLowerCase().includes('true or false') || correctAnswer.match(/^(true|false)$/i))) {
+            qType = 'true_false';
+        }
+
+        if (qType === 'true_false') {
+            options.push({ id: 'True', text: 'True' }, { id: 'False', text: 'False' });
+            correctAnswer = correctAnswer || 'True';
+        }
+
+        if (questionText) {
             parsedQuestions.push({
                 id: startIdx + parsedQuestions.length,
+                type: qType,
                 text: questionText,
                 options: options,
-                correctAnswer: correctAnswer || options[0].id,
+                pairs: matchingPairs,
+                correctAnswer: correctAnswer || (options[0] ? options[0].id : ''),
                 explanation: explanation || "",
                 passageTitle: passageTitle || "",
                 passage: passage || "",
@@ -228,6 +250,26 @@ const MathText = ({ text }) => {
 
     return <span ref={containerRef} />;
 };
+
+const renderFillBlankText = (text, userVal) => {
+    const parts = text.split('_____');
+    if (parts.length === 1) return <MathText text={text} />;
+    return (
+        <span>
+            {parts.map((part, idx) => (
+                <React.Fragment key={idx}>
+                    <MathText text={part} />
+                    {idx < parts.length - 1 && (
+                        <span className="inline-block border-b-2 border-blue-600 px-3 py-0.5 mx-1 font-bold text-blue-800 bg-blue-50 rounded">
+                            {userVal || '_____'}
+                        </span>
+                    )}
+                </React.Fragment>
+            ))}
+        </span>
+    );
+};
+
 const Passage = ({ title, text, isHTML }) => {
     const [isOpen, setIsOpen] = useState(false);
     return (
@@ -248,7 +290,7 @@ const Passage = ({ title, text, isHTML }) => {
 function App() {
     const [exams, setExams] = useState([]);
     const [loadingExams, setLoadingExams] = useState(true);
-    const [fetchError, setFetchError] = useState(null); // Added to display Firebase errors
+    const [fetchError, setFetchError] = useState(null);
     const [currentView, setCurrentView] = useState('dashboard');
     const [activeExam, setActiveExam] = useState(null);
     const [currentIndex, setCurrentIndex] = useState(0);
@@ -256,7 +298,7 @@ function App() {
     const [flagged, setFlagged] = useState({});
     const [flagReasons, setFlagReasons] = useState({});
     const [score, setScore] = useState(0);
-
+    const [manualOverrides, setManualOverrides] = useState({});
     const [uatSection, setUatSection] = useState(null);
 
     const [highScores, setHighScores] = useState(() => {
@@ -293,16 +335,31 @@ function App() {
 
     const [selectedExamStats, setSelectedExamStats] = useState(null);
 
+    const SUBJECT_TIME_PER_QUESTION = {
+        'Mathematics': 3.0,
+        'Physics': 2.5,
+        'Aptitude': 2.0,
+        'Chemistry': 1.875,
+        'Biology': 1.5,
+        'English': 1.2,
+        'Default': 1.2
+    };
+
     const [showAddModal, setShowAddModal] = useState(false);
     const [examTitle, setExamTitle] = useState('');
     const [examType, setExamType] = useState('default');
     const [examSubject, setExamSubject] = useState('');
-    const [examDuration, setExamDuration] = useState(60);
     const [examDescription, setExamDescription] = useState('');
     const [totalQuestions, setTotalQuestions] = useState(60);
 
-    const [isSavingExam, setIsSavingExam] = useState(false);
+    const [useDefaultTimer, setUseDefaultTimer] = useState(true);
+    const [customTimerMode, setCustomTimerMode] = useState('perQuestion');
+    const [customMinsPerQuestion, setCustomMinsPerQuestion] = useState(1.2);
+    const [plainHours, setPlainHours] = useState(1);
+    const [plainMinutes, setPlainMinutes] = useState(0);
+    const [plainSeconds, setPlainSeconds] = useState(0);
 
+    const [isSavingExam, setIsSavingExam] = useState(false);
     const [editingExam, setEditingExam] = useState(null);
     const [editQuestions, setEditQuestions] = useState([]);
     const [isUpdatingExam, setIsUpdatingExam] = useState(false);
@@ -332,7 +389,7 @@ function App() {
                 setExams(fetchedList);
             } catch (err) {
                 console.error("Error fetching exams: ", err);
-                setFetchError(err.message); // Captures the error to show on UI
+                setFetchError(err.message);
             } finally {
                 setLoadingExams(false);
             }
@@ -371,7 +428,6 @@ function App() {
         return () => window.removeEventListener('beforeunload', handleBeforeUnload);
     }, [currentView, timerStatus]);
 
-    // 2. Auto-save exam state to localStorage
     useEffect(() => {
         if (currentView === 'exam' && activeExam) {
             const activeSession = {
@@ -386,7 +442,6 @@ function App() {
         }
     }, [currentView, activeExam, answers, timeLeft, currentIndex, uatSection, timerStatus]);
 
-    // 3. Restore exam session after exams load
     useEffect(() => {
         if (!loadingExams && exams.length > 0 && currentView === 'dashboard') {
             const savedSessionStr = localStorage.getItem('exam_in_progress');
@@ -412,13 +467,9 @@ function App() {
         }
     }, [loadingExams, exams]);
 
-    // 4. Keyboard Shortcuts for Navigation and Selection
     useEffect(() => {
         const handleKeyDown = (e) => {
-            // Do nothing if the user is typing in a text field (e.g., search, flag reasons)
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-            // Only trigger during the exam or result review
             if (currentView !== 'exam' && currentView !== 'results') return;
 
             const isFinished = currentView === 'results';
@@ -446,15 +497,20 @@ function App() {
                     return isPrevDisabled ? prev : prev - 1;
                 });
             } else if (!isFinished) {
-                // Selection mapped to A, B, C, D keys
                 const key = e.key.toUpperCase();
                 const question = activeExam?.questions[currentIndex];
 
-                if (question && ['A', 'B', 'C', 'D', 'E'].includes(key)) {
-                    // Verify the option actually exists for this question
-                    const validOption = question.options.some(o => o.id === key);
-                    if (validOption) {
-                        setAnswers(prev => ({ ...prev, [question.id]: key }));
+                if (question && (question.type === 'mcq' || question.type === 'true_false')) {
+                    if (['A', 'B', 'C', 'D', 'E', 'T', 'F'].includes(key)) {
+                        let selectedVal = key;
+                        if (question.type === 'true_false') {
+                            if (key === 'T') selectedVal = 'True';
+                            if (key === 'F') selectedVal = 'False';
+                        }
+                        const validOption = question.options.some(o => o.id === selectedVal);
+                        if (validOption) {
+                            setAnswers(prev => ({ ...prev, [question.id]: selectedVal }));
+                        }
                     }
                 }
             }
@@ -463,17 +519,6 @@ function App() {
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [currentView, activeExam, currentIndex, uatSection]);
-
-    const handleTotalQuestionsChange = (val) => {
-        const count = Math.max(1, Number(val));
-        setTotalQuestions(count);
-        setExamBlocks(prev => {
-            if (prev.length === 1) return [{ ...prev[0], endQ: count }];
-            const updated = [...prev];
-            updated[updated.length - 1].endQ = count;
-            return updated;
-        });
-    };
 
     const handleUpdateBlock = (index, field, value, sectionType = 'default') => {
         let targetBlocks = examBlocks;
@@ -573,12 +618,25 @@ function App() {
         const slug = examTitle.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'exam';
         const generatedId = `${slug}-${Date.now()}`;
 
+        let calculatedDurationMinutes = 60;
+        if (examType === 'UAT') {
+            calculatedDurationMinutes = 150;
+        } else if (useDefaultTimer) {
+            const rate = SUBJECT_TIME_PER_QUESTION[effectiveSubject] || SUBJECT_TIME_PER_QUESTION['Default'];
+            calculatedDurationMinutes = Math.round(compiledQuestions.length * rate);
+        } else if (customTimerMode === 'perQuestion') {
+            calculatedDurationMinutes = Math.round(compiledQuestions.length * Number(customMinsPerQuestion));
+        } else {
+            const totalSecs = (Number(plainHours) * 3600) + (Number(plainMinutes) * 60) + Number(plainSeconds);
+            calculatedDurationMinutes = Math.max(1, Math.round(totalSecs / 60));
+        }
+
         const newExamObj = {
             id: generatedId,
             title: examTitle,
             type: examType,
             subject: effectiveSubject,
-            durationMinutes: examType === 'UAT' ? 150 : Number(examDuration),
+            durationMinutes: calculatedDurationMinutes,
             description: examDescription,
             questions: compiledQuestions,
             createdAt: firebase.firestore.FieldValue.serverTimestamp()
@@ -591,7 +649,6 @@ function App() {
             setExamTitle('');
             setExamType('default');
             setExamSubject('');
-            setExamDuration(60);
             setExamDescription('');
             setTotalQuestions(60);
             setExamBlocks([{ id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }]);
@@ -602,7 +659,7 @@ function App() {
             alert(`Exam successfully saved with ${compiledQuestions.length} questions!`);
         } catch (error) {
             console.error("Error saving exam to Firestore: ", error);
-            alert("Failed to save exam.");
+            alert("Failed to save exam: " + error.message);
         } finally {
             setIsSavingExam(false);
         }
@@ -689,7 +746,6 @@ function App() {
         try {
             await db.collection('exams').doc(examToDelete.id).delete();
 
-            // 1. Remove history logs for deleted exam
             setExamHistory(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
@@ -697,7 +753,6 @@ function App() {
                 return updated;
             });
 
-            // 2. Remove high score for deleted exam
             setHighScores(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
@@ -714,27 +769,32 @@ function App() {
             setIsDeleting(false);
         }
     };
+
     const shuffleArray = (array) => {
-    const arr = [...array];
-    for (let i = arr.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [arr[i], arr[j]] = [arr[j], arr[i]];
-    }
-    return arr;
-};
+        const arr = [...array];
+        for (let i = arr.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [arr[i], arr[j]] = [arr[j], arr[i]];
+        }
+        return arr;
+    };
 
-const handleSelectExam = (exam) => {
-    let shuffledQuestions = [...(exam.questions || [])];
-    if (exam.type === 'UAT') {
-        const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
-        const mathPart = shuffleArray(shuffledQuestions.slice(55));
-        shuffledQuestions = [...englishPart, ...mathPart];
-    } else {
-        shuffledQuestions = shuffleArray(shuffledQuestions);
-    }
+    const handleSelectExam = (exam) => {
+        let shuffledQuestions = [...(exam.questions || [])];
+        const shouldShuffle = exam.shuffleQuestions !== false;
+        if (shouldShuffle) {
+            if (exam.type === 'UAT') {
+                const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
+                const mathPart = shuffleArray(shuffledQuestions.slice(55));
+                shuffledQuestions = [...englishPart, ...mathPart];
+            } else {
+                shuffledQuestions = shuffleArray(shuffledQuestions);
+            }
+        }
 
-    setActiveExam({ ...exam, questions: shuffledQuestions });
-    if (exam.type === 'UAT') {
+        setActiveExam({ ...exam, questions: shuffledQuestions });
+        setManualOverrides({});
+        if (exam.type === 'UAT') {
             setUatSection('english');
             setInputHours(1);
             setInputMinutes(0);
@@ -785,15 +845,67 @@ const handleSelectExam = (exam) => {
         setTimerStatus('running');
     };
 
-    const handleSubmit = () => {
-        let finalScore = 0;
+    const isOriginallyCorrect = (q) => {
+    const userAns = answers[q.id];
+    if (userAns === undefined || userAns === null || userAns === '') return false;
+
+    if (q.type === 'fill_blank' || q.type === 'short_answer') {
+        const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
+        return correctOpts.includes(String(userAns).trim().toLowerCase());
+    } else if (q.type === 'matching') {
+        let allCorrect = true;
+        if (typeof userAns === 'object' && userAns !== null) {
+            q.pairs.forEach(p => {
+                if (!userAns[p.id] || String(userAns[p.id]).trim() !== String(p.right).trim()) allCorrect = false;
+            });
+        } else {
+            allCorrect = false;
+        }
+        return allCorrect;
+    } else {
+        return String(userAns).trim() === String(q.correctAnswer).trim();
+    }
+};
+
+const isQuestionCorrect = (q) => {
+        if (manualOverrides[q.id] !== undefined) {
+            return manualOverrides[q.id];
+        }
+        const userAns = answers[q.id];
+        if (userAns === undefined || userAns === null || userAns === '') return false;
+
+        if (q.type === 'fill_blank' || q.type === 'short_answer') {
+            const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
+            return correctOpts.includes(String(userAns).trim().toLowerCase());
+        } else if (q.type === 'matching') {
+            let allCorrect = true;
+            if (typeof userAns === 'object' && userAns !== null) {
+                q.pairs.forEach(p => {
+                    if (!userAns[p.id] || String(userAns[p.id]).trim() !== String(p.right).trim()) allCorrect = false;
+                });
+            } else {
+                allCorrect = false;
+            }
+            return allCorrect;
+        } else {
+            return String(userAns).trim() === String(q.correctAnswer).trim();
+        }
+    };
+
+    const calculateCurrentScore = () => {
+        let scoreCount = 0;
         activeExam.questions.forEach(q => {
-            if (answers[q.id] === q.correctAnswer) finalScore++;
+            if (isQuestionCorrect(q)) scoreCount++;
         });
-        setScore(finalScore);
+        return scoreCount;
+    };
+
+    const finalizeAndShowResults = (overrideScore) => {
+        const currentScore = overrideScore !== undefined ? overrideScore : calculateCurrentScore();
+        setScore(currentScore);
 
         const totalQ = activeExam.questions.length || 1;
-        const scorePct = Math.round((finalScore / totalQ) * 100);
+        const scorePct = Math.round((currentScore / totalQ) * 100);
 
         setHighScores(prev => {
             const previousHigh = prev[activeExam.id] !== undefined ? prev[activeExam.id] : -1;
@@ -806,7 +918,7 @@ const handleSelectExam = (exam) => {
         });
 
         const newRecord = {
-            score: finalScore,
+            score: currentScore,
             total: totalQ,
             scorePct: scorePct,
             date: new Date().toISOString()
@@ -828,10 +940,31 @@ const handleSelectExam = (exam) => {
         setTimerStatus('finished');
     };
 
+    const handleSubmit = () => {
+        const finalScore = calculateCurrentScore();
+        finalizeAndShowResults(finalScore);
+    };
+
+    const handleToggleOverride = (qId, status) => {
+        const updatedOverrides = { ...manualOverrides, [qId]: status };
+        setManualOverrides(updatedOverrides);
+
+        let newScore = 0;
+        activeExam.questions.forEach(q => {
+            if (updatedOverrides[q.id] !== undefined) {
+                if (updatedOverrides[q.id]) newScore++;
+            } else {
+                if (isQuestionCorrect(q)) newScore++;
+            }
+        });
+        setScore(newScore);
+    };
+
     const handleReset = () => {
         setAnswers({});
         setFlagged({});
         setFlagReasons({});
+        setManualOverrides({});
         setScore(0);
         setCurrentIndex(0);
         setShowResetModal(false);
@@ -906,13 +1039,13 @@ const handleSelectExam = (exam) => {
         setAnswers({});
         setFlagged({});
         setFlagReasons({});
+        setManualOverrides({});
         setScore(0);
         setCurrentIndex(0);
         setTimerStatus('idle');
         setUatSection(null);
 
         localStorage.removeItem('exam_in_progress');
-
         setCurrentView('dashboard');
     };
 
@@ -933,7 +1066,7 @@ const handleSelectExam = (exam) => {
     const openExportModal = () => {
         const initialSelected = new Set();
         activeExam.questions.forEach(q => {
-            if (answers[q.id] !== q.correctAnswer || flagged[q.id]) {
+            if (!isQuestionCorrect(q) || flagged[q.id]) {
                 initialSelected.add(q.id);
             }
         });
@@ -1076,8 +1209,8 @@ const handleSelectExam = (exam) => {
                                 <textarea
                                     value={block.rawText}
                                     onChange={(e) => handleUpdateBlock(bIdx, 'rawText', e.target.value, sectionType)}
-                                    rows="6"
-                                    placeholder={`1. What is the main idea?\nA) Option A\nB) Option B\nC) Option C\nD) Option D\nAnswer: B\nExplanation: Simple explanation.`}
+                                    rows="8"
+                                    placeholder={`Type: mcq\nWhat is the derivative of f(x) = 3x^2?\nA) 3x\nB) 6x\nC) x^2\nD) 9x\nAnswer: B\nExplanation: Power rule.\n\nType: true_false\nThe Earth is round.\nAnswer: True\n\nType: fill_blank\nWater boils at _____ degrees Celsius.\nAnswer: 100\n\nType: matching\nMatch the items:\n1. Sun <-> Star\n2. Earth <-> Planet\nAnswer: 1->Star, 2->Planet\n\nType: short_answer\nExplain gravity.\nAnswer: Force that attracts objects.`}
                                     className="w-full border border-gray-300 rounded-lg p-3 font-mono text-xs text-gray-800 focus:ring-2 focus:ring-blue-500 outline-none"
                                 ></textarea>
                             </div>
@@ -1270,7 +1403,6 @@ const handleSelectExam = (exam) => {
                         </div>
                     )}
 
-                    {/* EXAM INFO & HISTORY MODAL */}
                     {selectedExamStats && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-2xl w-full max-h-[90vh] overflow-hidden">
@@ -1289,6 +1421,24 @@ const handleSelectExam = (exam) => {
                                             <div><span className="font-semibold text-gray-700">Duration:</span> {selectedExamStats.durationMinutes} mins</div>
                                             <div><span className="font-semibold text-gray-700">Total Questions:</span> {selectedExamStats.questions?.length || 0}</div>
                                             <div><span className="font-semibold text-gray-700">Type:</span> {selectedExamStats.type}</div>
+                                        </div>
+                                        <div className="mt-4 flex items-center gap-2 pt-3 border-t">
+                                            <input
+                                                type="checkbox"
+                                                id="shuffleToggle"
+                                                checked={selectedExamStats.shuffleQuestions !== false}
+                                                onChange={async (e) => {
+                                                    const newVal = e.target.checked;
+                                                    const updated = { ...selectedExamStats, shuffleQuestions: newVal };
+                                                    setSelectedExamStats(updated);
+                                                    setExams(prev => prev.map(ex => ex.id === updated.id ? updated : ex));
+                                                    try {
+                                                        await db.collection('exams').doc(updated.id).update({ shuffleQuestions: newVal });
+                                                    } catch (err) { console.error(err); }
+                                                }}
+                                                className="w-4 h-4 text-blue-600 rounded border-gray-300 cursor-pointer"
+                                            />
+                                            <label htmlFor="shuffleToggle" className="text-sm font-medium text-gray-700 cursor-pointer">Shuffle Questions on Start</label>
                                         </div>
                                     </div>
                                     <div className="border-t pt-4">
@@ -1354,14 +1504,27 @@ const handleSelectExam = (exam) => {
                         </div>
                     )}
 
-                    {/* MODAL: ADD NEW EXAM */}
                     {showAddModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-5xl w-full max-h-[92vh] overflow-hidden">
                                 <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                                     <div>
                                         <h3 className="text-xl font-bold text-gray-900">Add New Exam (Block Builder)</h3>
-                                        <p className="text-xs text-gray-500 mt-0.5">Configure exam details and organize questions into extendable passage blocks.</p>
+                                        <div className="flex items-center gap-3 mt-1">
+                                            <p className="text-xs text-gray-500">Configure exam details and organize questions into extendable passage blocks.</p>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    const sampleText = `Type: mcq\nWhat is the derivative of f(x) = 3x^2?\nA) 3x\nB) 6x\nC) x^2\nD) 9x\nAnswer: B\nExplanation: Power rule.\n\nType: true_false\nThe Earth is round.\nAnswer: True\n\nType: fill_blank\nWater boils at _____ degrees Celsius.\nAnswer: 100\n\nType: matching\nMatch the items:\n1. Sun <-> Star\n2. Earth <-> Planet\nAnswer: 1->Star, 2->Planet\n\nType: short_answer\nExplain gravity.\nAnswer: Force that attracts objects.`;
+                                                    navigator.clipboard.writeText(sampleText).then(() => {
+                                                        alert("Sample exam format copied to clipboard!");
+                                                    });
+                                                }}
+                                                className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 font-bold rounded border border-purple-200 transition-colors"
+                                            >
+                                                📋 Copy AI Format Sample
+                                            </button>
+                                        </div>
                                     </div>
                                     <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-gray-700">
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
@@ -1369,7 +1532,7 @@ const handleSelectExam = (exam) => {
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1">
-                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                                   <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
                                         <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Exam Title *</label>
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
@@ -1420,47 +1583,110 @@ const handleSelectExam = (exam) => {
                                                 )}
                                             </div>
                                         </div>
+
                                         {examType !== 'UAT' && (
-                                            <>
-                                                <div>
-                                                    <label className="block text-xs font-bold text-gray-700 mb-1">Duration (Mins)</label>
-                                                    <input type="number" value={examDuration} onChange={(e) => setExamDuration(e.target.value)} min="1" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
+                                            <div className="md:col-span-3 lg:col-span-2 bg-white p-3 rounded-lg border border-blue-200 shadow-sm space-y-2">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-xs font-bold text-blue-900">Timer Settings</span>
+                                                    <label className="flex items-center gap-1.5 text-xs font-semibold text-gray-700 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={useDefaultTimer}
+                                                            onChange={(e) => setUseDefaultTimer(e.target.checked)}
+                                                            className="rounded text-blue-600 focus:ring-blue-500"
+                                                        />
+                                                        <span>Default Exam Timing</span>
+                                                    </label>
                                                 </div>
-                                            </>
+
+                                                {useDefaultTimer ? (
+                                                    <p className="text-[11px] text-gray-600 bg-blue-50 p-2 rounded border border-blue-100 leading-tight">
+                                                        ✨ Standard entrance rate for <strong className="text-blue-800">{examSubject || 'this subject'}</strong> ({SUBJECT_TIME_PER_QUESTION[examSubject] || SUBJECT_TIME_PER_QUESTION['Default']} min/Q) multiplied by question count.
+                                                    </p>
+                                                ) : (
+                                                    <div className="space-y-2 pt-1">
+                                                        <div className="flex gap-3 text-[11px] font-semibold text-gray-700">
+                                                            <label className="flex items-center gap-1 cursor-pointer">
+                                                                <input
+                                                                    type="radio"
+                                                                    name="timerMode"
+                                                                    checked={customTimerMode === 'perQuestion'}
+                                                                    onChange={() => setCustomTimerMode('perQuestion')}
+                                                                    className="text-blue-600"
+                                                                />
+                                                                Per Min / Question
+                                                            </label>
+                                                            <label className="flex items-center gap-1 cursor-pointer">
+                                                                <input
+                                                                    type="radio"
+                                                                    name="timerMode"
+                                                                    checked={customTimerMode === 'plainTotal'}
+                                                                    onChange={() => setCustomTimerMode('plainTotal')}
+                                                                    className="text-blue-600"
+                                                                />
+                                                                Plain Total Time
+                                                            </label>
+                                                        </div>
+
+                                                        {customTimerMode === 'perQuestion' ? (
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-[11px] text-gray-600">Mins per question:</span>
+                                                                <input
+                                                                    type="number"
+                                                                    step="0.1"
+                                                                    min="0.1"
+                                                                    value={customMinsPerQuestion}
+                                                                    onChange={(e) => setCustomMinsPerQuestion(e.target.value)}
+                                                                    className="w-16 border border-gray-300 rounded p-1 text-xs font-bold text-center outline-none focus:ring-1 focus:ring-blue-500"
+                                                                />
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center gap-1 text-xs text-gray-700 font-mono">
+                                                                <span>H:</span>
+                                                                <input type="number" min="0" value={plainHours} onChange={(e) => setPlainHours(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                                <span>M:</span>
+                                                                <input type="number" min="0" max="59" value={plainMinutes} onChange={(e) => setPlainMinutes(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                                <span>S:</span>
+                                                                <input type="number" min="0" max="59" value={plainSeconds} onChange={(e) => setPlainSeconds(e.target.value)} className="w-10 border rounded p-1 text-center text-xs" />
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                )}
+                                            </div>
                                         )}
+
                                         <div className="md:col-span-3 lg:col-span-5">
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Description</label>
                                             <input type="text" value={examDescription} onChange={(e) => setExamDescription(e.target.value)} placeholder="Brief details or instructions..." className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none" />
                                         </div>
                                     </div>
 
-                                    {examType === 'UAT' ? (
-                                        <div className="border-t pt-4">
-                                            {renderBlockGroup(uatEnglishBlocks, 'english')}
-                                            {renderBlockGroup(uatMathBlocks, 'math')}
-                                        </div>
-                                    ) : (
-                                        <div className="border-t pt-4">
-                                            {renderBlockGroup(examBlocks, 'default')}
-                                        </div>
-                                    )}
-                                </div>
+                                        {examType === 'UAT' ? (
+                                            <div className="border-t pt-4">
+                                                {renderBlockGroup(uatEnglishBlocks, 'english')}
+                                                {renderBlockGroup(uatMathBlocks, 'math')}
+                                            </div>
+                                        ) : (
+                                            <div className="border-t pt-4">
+                                                {renderBlockGroup(examBlocks, 'default')}
+                                            </div>
+                                        )}
+                                    </div>
 
-                                <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-                                    <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
-                                    <button
-                                        onClick={handleSaveExamToFirestore}
-                                        disabled={isSavingExam}
-                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
-                                    >
-                                        {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
-                                    </button>
+                                    <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                                        <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
+                                        <button
+                                            onClick={handleSaveExamToFirestore}
+                                            disabled={isSavingExam}
+                                            className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+                                        >
+                                            {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
-                        </div>
                     )}
 
-                    {/* MODAL: EDIT EXISTING EXAM */}
                     {editingExam && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
@@ -1573,18 +1799,107 @@ const handleSelectExam = (exam) => {
                                                         placeholder="Question Stem Text..."
                                                     ></textarea>
 
-                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                                                        {q.options.map((opt, optIdx) => (
-                                                            <div key={opt.id} className="flex items-center gap-2 bg-white p-1.5 border rounded">
-                                                                <span className="font-bold text-xs text-gray-600 w-4">{opt.id}.</span>
+                                                    <div className="space-y-3">
+                                                        <div className="flex items-center gap-3">
+                                                            <label className="text-xs font-semibold text-gray-700">Question Type:</label>
+                                                            <select
+                                                                value={q.type || 'mcq'}
+                                                                onChange={(e) => handleUpdateQuestionField(qIdx, 'type', e.target.value)}
+                                                                className="border rounded px-2 py-1 text-xs bg-white focus:ring-1 focus:ring-blue-500 outline-none"
+                                                            >
+                                                                <option value="mcq">Multiple Choice (MCQ)</option>
+                                                                <option value="true_false">True / False</option>
+                                                                <option value="fill_blank">Fill in the Blank</option>
+                                                                <option value="short_answer">Short Answer</option>
+                                                                <option value="matching">Matching Pairs</option>
+                                                            </select>
+                                                        </div>
+
+                                                        {(q.type === 'mcq' || !q.type || q.type === 'true_false') && (
+                                                            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                                                {q.options.map((opt, optIdx) => (
+                                                                    <div key={opt.id} className="flex items-center gap-2 bg-white p-1.5 border rounded">
+                                                                        <span className="font-bold text-xs text-gray-600 w-4">{opt.id}.</span>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={opt.text}
+                                                                            onChange={(e) => handleUpdateOptionText(qIdx, optIdx, e.target.value)}
+                                                                            className="w-full text-xs border-none outline-none"
+                                                                        />
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+
+                                                        {q.type === 'fill_blank' && (
+                                                            <div className="p-2 bg-white border rounded text-xs text-gray-600">
+                                                                <span>Expected Answer (use `|` for alternative synonyms):</span>
                                                                 <input
                                                                     type="text"
-                                                                    value={opt.text}
-                                                                    onChange={(e) => handleUpdateOptionText(qIdx, optIdx, e.target.value)}
-                                                                    className="w-full text-xs border-none outline-none"
+                                                                    value={q.correctAnswer || ''}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'correctAnswer', e.target.value)}
+                                                                    className="w-full mt-1 border rounded p-1 text-xs"
+                                                                    placeholder="e.g. photosynthesis | photo-synthesis"
                                                                 />
                                                             </div>
-                                                        ))}
+                                                        )}
+
+                                                        {q.type === 'short_answer' && (
+                                                            <div className="p-2 bg-white border rounded text-xs text-gray-600">
+                                                                <span>Reference Answer / Grading Key:</span>
+                                                                <textarea
+                                                                    value={q.correctAnswer || ''}
+                                                                    onChange={(e) => handleUpdateQuestionField(qIdx, 'correctAnswer', e.target.value)}
+                                                                    className="w-full mt-1 border rounded p-1 text-xs"
+                                                                    rows="2"
+                                                                    placeholder="Model answer..."
+                                                                />
+                                                            </div>
+                                                        )}
+
+                                                        {q.type === 'matching' && (
+                                                            <div className="p-2 bg-white border rounded text-xs space-y-2">
+                                                                <span className="font-bold text-gray-700">Matching Pairs:</span>
+                                                                {(q.pairs || []).map((pair, pIdx) => (
+                                                                    <div key={pair.id || pIdx} className="flex items-center gap-2">
+                                                                        <span className="font-semibold text-gray-600">{pair.id}.</span>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={pair.left}
+                                                                            onChange={(e) => {
+                                                                                const newPairs = [...(q.pairs || [])];
+                                                                                newPairs[pIdx].left = e.target.value;
+                                                                                handleUpdateQuestionField(qIdx, 'pairs', newPairs);
+                                                                            }}
+                                                                            className="border rounded p-1 text-xs flex-1"
+                                                                            placeholder="Left item"
+                                                                        />
+                                                                        <span>&lt;-&gt;</span>
+                                                                        <input
+                                                                            type="text"
+                                                                            value={pair.right}
+                                                                            onChange={(e) => {
+                                                                                const newPairs = [...(q.pairs || [])];
+                                                                                newPairs[pIdx].right = e.target.value;
+                                                                                handleUpdateQuestionField(qIdx, 'pairs', newPairs);
+                                                                            }}
+                                                                            className="border rounded p-1 text-xs flex-1"
+                                                                            placeholder="Right option"
+                                                                        />
+                                                                    </div>
+                                                                ))}
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const newPairs = [...(q.pairs || []), { id: String((q.pairs || []).length + 1), left: '', right: '' }];
+                                                                        handleUpdateQuestionField(qIdx, 'pairs', newPairs);
+                                                                    }}
+                                                                    className="px-2 py-1 bg-blue-50 text-blue-700 font-bold rounded text-[11px]"
+                                                                >
+                                                                    + Add Pair
+                                                                </button>
+                                                            </div>
+                                                        )}
                                                     </div>
 
                                                     <div className="flex items-center gap-3 pt-1">
@@ -1628,7 +1943,6 @@ const handleSelectExam = (exam) => {
                         </div>
                     )}
 
-                    {/* MODAL: DELETE CONFIRMATION */}
                     {examToDelete && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
                             <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
@@ -1665,7 +1979,7 @@ const handleSelectExam = (exam) => {
 
         if (isSubmitted) {
             if (!answers[q.id]) bgClass = "bg-gray-100 text-gray-500 border-gray-300";
-            else if (answers[q.id] === q.correctAnswer) bgClass = "bg-green-100 text-green-800 border-green-400";
+            else if (isQuestionCorrect(q)) bgClass = "bg-green-100 text-green-800 border-green-400";
             else bgClass = "bg-red-100 text-red-800 border-red-400";
         } else if (isAnswered) bgClass = "bg-blue-100 text-blue-800 border-blue-300";
 
@@ -1681,7 +1995,7 @@ const handleSelectExam = (exam) => {
     let mathScore = 0;
     if (isSubmitted && activeExam.type === 'UAT') {
         activeExam.questions.forEach((q, idx) => {
-            if (answers[q.id] === q.correctAnswer) {
+            if (isQuestionCorrect(q)) {
                 if (idx < 55) englishScore++;
                 else mathScore++;
             }
@@ -1704,18 +2018,14 @@ const handleSelectExam = (exam) => {
     }
 
     const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
-
     const scoreColorClass = finalScorePct === 100 ? "text-yellow-500" : finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
-
     const displayScoreText = finalScorePct === 100 ? (
         <span><span className="animate-crown">👑</span> 100%</span>
     ) : `${finalScorePct}%`;
 
-    // The return statement and main container were missing here!
     return (
         <div className="min-h-screen py-4 px-4 sm:px-6 lg:px-8 relative pb-20">
 
-            {/* The celebration overlay */}
             {isSubmitted && finalScorePct === 100 && (
                 <div className="fixed inset-0 pointer-events-none z-50 animate-cyan-bg"></div>
             )}
@@ -1739,8 +2049,8 @@ const handleSelectExam = (exam) => {
                         <h3 className="text-lg font-bold text-gray-900 mb-2">Submit & Exit?</h3>
                         <p className="text-gray-600 text-sm mb-6">Returning to the dashboard will submit your exam right away and record your score. Are you sure?</p>
                         <div className="flex justify-end gap-3">
-                            <button onClick={() => setShowExitConfirmModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
-                            <button onClick={handleConfirmExitAndSubmit} className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium">Yes, Submit & Exit</button>
+                            <button onClick={() => setShowExitConfirmModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
+                            <button onClick={handleConfirmExitAndSubmit} className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md font-medium">Yes, Submit & Exit</button>
                         </div>
                     </div>
                 </div>
@@ -1757,7 +2067,7 @@ const handleSelectExam = (exam) => {
                             <div className="space-y-3">
                                 {activeExam.questions.map(q => {
                                     const isSelected = exportSelectedIds.has(q.id);
-                                    const isWrong = answers[q.id] !== q.correctAnswer;
+                                    const isWrong = !isQuestionCorrect(q);
                                     const isFlagged = flagged[q.id];
                                     return (
                                         <label key={q.id} className={`flex items-start gap-4 p-4 border rounded-lg cursor-pointer transition-colors ${isSelected ? 'bg-blue-50 border-blue-300' : 'hover:bg-gray-50 border-gray-200'}`}>
@@ -1892,11 +2202,11 @@ const handleSelectExam = (exam) => {
                                 )}
 
                                 {activeExam.type === 'UAT' && uatSection === 'english' ? (
-                                    <button onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                    <button type="button" onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
                                         Submit English & Start Math
                                     </button>
                                 ) : (
-                                    <button onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm">
+                                    <button type="button" onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
                                         Submit Exam
                                     </button>
                                 )}
@@ -1950,7 +2260,8 @@ const handleSelectExam = (exam) => {
                                         </h2>
                                         {question.image && <img src={question.image} alt="Figure" className="mb-4 max-w-full rounded-md border border-gray-200 mt-2 max-h-64 object-contain" />}
                                         <div className="text-gray-900 text-lg sm:text-xl whitespace-pre-wrap leading-relaxed">
-                                            <span className="font-bold mr-2">{currentIndex + 1}.</span><MathText text={question.text} />
+                                            <span className="font-bold mr-2">{currentIndex + 1}.</span>
+                                            {question.type === 'fill_blank' ? renderFillBlankText(question.text, answers[question.id]) : <MathText text={question.text} />}
                                         </div>
                                     </div>
                                     <button onClick={() => toggleFlag(question.id)} className={`p-1.5 rounded-md transition-colors group ${flagged[question.id] ? "text-red-500 fill-red-500" : "text-gray-400 hover:text-gray-600 fill-none"}`}>
@@ -1959,7 +2270,7 @@ const handleSelectExam = (exam) => {
                                 </div>
 
                                 <div className="space-y-4 pl-0 sm:pl-6 transition-all duration-300">
-                                    {question.options.map((option) => {
+                                    {(!question.type || question.type === 'mcq') && question.options.map((option) => {
                                         const isSelected = answers[question.id] === option.id;
                                         const isCorrect = option.id === question.correctAnswer;
                                         let labelClass = "flex items-start p-3 border rounded-lg transition-colors cursor-pointer w-full " +
@@ -1977,6 +2288,139 @@ const handleSelectExam = (exam) => {
                                             </label>
                                         );
                                     })}
+
+                                    {question.type === 'true_false' && (
+                                        <div className="grid grid-cols-2 gap-4 my-4">
+                                            {['True', 'False'].map((val) => {
+                                                const isSelected = answers[question.id] === val;
+                                                const isCorrect = val === question.correctAnswer;
+                                                let btnStyle = "flex items-center justify-center gap-3 p-4 rounded-xl border-2 font-bold text-base transition-all cursor-pointer shadow-sm ";
+                                                if (isSubmitted) {
+                                                    if (isCorrect) btnStyle += "bg-green-50 border-green-300 text-green-900";
+                                                    else if (isSelected) btnStyle += "bg-red-50 border-red-300 text-red-900";
+                                                    else btnStyle += "bg-gray-50 border-gray-200 text-gray-400 opacity-60 cursor-not-allowed";
+                                                } else {
+                                                    if (isSelected) btnStyle += "bg-blue-50 border-blue-300 text-blue-900 shadow-sm";
+                                                    else btnStyle += "bg-white border-gray-200 hover:bg-gray-50 text-gray-800";
+                                                }
+
+                                                return (
+                                                    <button
+                                                        key={val}
+                                                        type="button"
+                                                        disabled={isSubmitted}
+                                                        onClick={() => handleOptionSelect(question.id, val)}
+                                                        className={btnStyle}
+                                                    >
+                                                        {val === 'True' ? (
+                                                            <span className="text-base">✓ True</span>
+                                                        ) : (
+                                                            <span className="text-base">✗ False</span>
+                                                        )}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    )}
+
+                                    {question.type === 'fill_blank' && (
+                                        <div className="space-y-3">
+                                            <label className="block text-xs font-bold text-gray-600 uppercase tracking-wide">Type answer for the blank space:</label>
+                                            <input
+                                                type="text"
+                                                disabled={isSubmitted}
+                                                value={answers[question.id] || ''}
+                                                onChange={(e) => setAnswers({ ...answers, [question.id]: e.target.value })}
+                                                placeholder="Type your answer here..."
+                                                className="w-full border-2 border-blue-300 focus:border-blue-600 rounded-lg p-3 text-base outline-none bg-white font-semibold text-gray-900 shadow-sm"
+                                            />
+                                            {isSubmitted && (
+                                                <div className="text-sm font-semibold mt-2">
+                                                    <span className="text-gray-600">Your Answer: </span>
+                                                    <span className={isQuestionCorrect(question) ? 'text-green-700 font-bold' : 'text-red-600 font-bold'}>
+                                                        {answers[question.id] || '(Blank)'}
+                                                    </span>
+                                                </div>
+                                            )}
+                                        </div>
+                                    )}
+
+                                    {question.type === 'short_answer' && (
+                                        <div className="space-y-3">
+                                            <textarea
+                                                disabled={isSubmitted}
+                                                rows="3"
+                                                value={answers[question.id] || ''}
+                                                onChange={(e) => setAnswers({ ...answers, [question.id]: e.target.value })}
+                                                placeholder="Type your answer or explanation here..."
+                                                className="w-full border-2 border-gray-300 focus:border-blue-500 rounded-lg p-3 text-base outline-none bg-white font-medium text-gray-800 shadow-sm"
+                                            ></textarea>
+                                        </div>
+                                    )}
+
+                                    {question.type === 'matching' && question.pairs && (
+                                        <div className="space-y-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
+                                            <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Match Items: Type the corresponding letter (A, B, C...) in the box.</p>
+                                            <div className="bg-white p-3 rounded border border-blue-100 text-xs space-y-1">
+                                                <p className="font-bold text-blue-900 mb-1">Available Options:</p>
+                                                {question.pairs.map((p, oIdx) => {
+                                                    const optLetter = String.fromCharCode(65 + oIdx);
+                                                    return (
+                                                        <div key={oIdx} className="text-gray-800">
+                                                            <strong className="text-blue-700">{optLetter})</strong> <MathText text={p.right} />
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                            <div className="space-y-2">
+                                                {question.pairs.map((pair) => {
+                                                    const userPairAnswers = answers[question.id] || {};
+                                                    const typedVal = userPairAnswers[pair.id] || '';
+                                                    const maxLetter = String.fromCharCode(64 + question.pairs.length);
+
+                                                    return (
+                                                        <div key={pair.id} className="flex items-center justify-between gap-3 bg-white p-3 border rounded-md shadow-sm">
+                                                            <span className="text-sm font-medium text-gray-800 flex-1">
+                                                                <strong className="mr-2">{pair.id}.</strong> <MathText text={pair.left} />
+                                                            </span>
+                                                            <div className="flex items-center gap-2">
+                                                                <span className="text-xs font-semibold text-gray-500">Choice:</span>
+                                                                <input
+                                                                    type="text"
+                                                                    maxLength="1"
+                                                                    disabled={isSubmitted}
+                                                                    value={typedVal}
+                                                                    onChange={(e) => {
+                                                                        const char = e.target.value.toUpperCase();
+                                                                        if (char === "") {
+                                                                            const updated = { ...userPairAnswers };
+                                                                            delete updated[pair.id];
+                                                                            setAnswers({ ...answers, [question.id]: updated });
+                                                                            return;
+                                                                        }
+                                                                        if (char >= 'A' && char <= maxLetter) {
+                                                                            const alreadyUsed = Object.entries(userPairAnswers).some(
+                                                                                ([pId, val]) => pId !== String(pair.id) && val === char
+                                                                            );
+                                                                            if (alreadyUsed) {
+                                                                                alert(`Letter ${char} is already assigned to another matching pair.`);
+                                                                                return;
+                                                                            }
+                                                                            const updated = { ...userPairAnswers, [pair.id]: char };
+                                                                            setAnswers({ ...answers, [question.id]: updated });
+                                                                        }
+                                                                    }}
+                                                                    placeholder="?"
+                                                                    className="w-12 h-10 text-center font-bold text-base border-2 border-gray-300 focus:border-blue-500 rounded outline-none bg-white uppercase shadow-sm"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    )}
+
                                     {!isSubmitted && answers[question.id] && (
                                         <button
                                             onClick={() => {
@@ -2008,31 +2452,82 @@ const handleSelectExam = (exam) => {
                                         </div>
                                     )}
 
-                                    {isSubmitted && (
-                                        <div className={`mt-6 p-5 rounded-lg border text-sm sm:text-base ${answers[question.id] === question.correctAnswer
-                                            ? 'bg-emerald-50/60 border-emerald-200'
-                                            : 'bg-red-50/60 border-red-200'
-                                            }`}>
-                                            <div className="flex items-center gap-2 mb-3">
-                                                {answers[question.id] === question.correctAnswer ? (
-                                                    <span className="font-bold text-emerald-700 flex items-center gap-1.5 text-base">
-                                                        ✓ Correct
-                                                    </span>
-                                                ) : (
-                                                    <span className="font-bold text-red-700 flex items-center gap-1.5 text-base">
-                                                        ✕ Incorrect
-                                                    </span>
+                                    {isSubmitted && (() => {
+                                        const userAns = answers[question.id];
+                                        const hasAnswered = userAns !== undefined && userAns !== null && userAns !== '' && (typeof userAns !== 'object' || Object.keys(userAns).length > 0);
+                                        const isIncorrect = hasAnswered && !isOriginallyCorrect(question);
+                                        const containerBgClass = isQuestionCorrect(question) 
+                                            ? "bg-emerald-50/60 border-emerald-200" 
+                                            : "bg-rose-50/60 border-rose-200";
+
+                                        return (
+                                            <div className={`mt-6 p-5 rounded-lg border text-sm sm:text-base space-y-4 ${containerBgClass}`}>
+                                                {isIncorrect && (
+                                                    <div className="bg-white p-3 rounded-lg border border-rose-200 shadow-sm">
+                                                        {manualOverrides[question.id] === undefined ? (
+                                                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                                                <span className="text-xs font-bold text-gray-800">Want to override this incorrect result?</span>
+                                                                <div className="flex items-center gap-2">
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleToggleOverride(question.id, true)}
+                                                                        className="px-3 py-1 text-xs font-bold rounded bg-green-600 text-white hover:bg-green-700 transition-colors shadow-sm cursor-pointer"
+                                                                    >
+                                                                        Mark Correct
+                                                                    </button>
+                                                                    <button
+                                                                        type="button"
+                                                                        onClick={() => handleToggleOverride(question.id, false)}
+                                                                        className="px-3 py-1 text-xs font-bold rounded bg-gray-200 text-gray-700 hover:bg-gray-300 transition-colors cursor-pointer"
+                                                                    >
+                                                                        Keep Incorrect
+                                                                    </button>
+                                                                </div>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="flex items-center justify-between gap-3 text-xs">
+                                                                <span className="font-semibold text-gray-600">
+                                                                    Override: <strong className={manualOverrides[question.id] ? "text-green-700" : "text-rose-600"}>{manualOverrides[question.id] ? "Marked Correct" : "Kept Incorrect"}</strong>
+                                                                </span>
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => {
+                                                                        const copy = { ...manualOverrides };
+                                                                        delete copy[question.id];
+                                                                        setManualOverrides(copy);
+                                                                        let newScore = 0;
+                                                                        activeExam.questions.forEach(q => {
+                                                                            if (copy[q.id] !== undefined) {
+                                                                                if (copy[q.id]) newScore++;
+                                                                            } else {
+                                                                                if (isQuestionCorrect(q)) newScore++;
+                                                                            }
+                                                                        });
+                                                                        setScore(newScore);
+                                                                    }}
+                                                                    className="text-gray-500 hover:text-gray-800 underline cursor-pointer font-medium"
+                                                                >
+                                                                    Reset Override
+                                                                </button>
+                                                            </div>
+                                                        )}
+                                                    </div>
                                                 )}
-                                                <span className="text-gray-500 text-sm">
-                                                    (Correct Answer: {question.correctAnswer})
-                                                </span>
+
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-gray-700 font-bold text-sm">
+                                                        Expected Answer: <MathText text={question.correctAnswer} />
+                                                    </span>
+                                                </div>
+                                                <div>
+                                                    <div className="font-bold text-gray-900 mb-1.5">Explanation:</div>
+                                                    <div className="text-gray-800 leading-relaxed">
+                                                        <MathText text={question.explanation || "No detailed explanation available for this question."} />
+                                                    </div>
+                                                </div>
                                             </div>
-                                            <div className="font-bold text-gray-900 mb-1.5">Explanation:</div>
-                                            <div className="text-gray-800 leading-relaxed">
-                                                <MathText text={question.explanation || "No detailed explanation available for this question."} />
-                                            </div>
-                                        </div>
-                                    )}
+                                        );
+                                    })()}
                                 </div>
                             </div>
 
