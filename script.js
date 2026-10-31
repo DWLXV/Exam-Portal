@@ -158,7 +158,7 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
         lines.forEach(line => {
             const typeMatch = line.match(/^Type[:\s]*(mcq|tf|true_false|fill|blank|matching|short)/i);
             const ansMatch = line.match(/^(?:Answer|Ans|Correct)[:\s]*(.+)/i);
-            const optMatch = line.match(/^([A-D])[\.\)]\s*(.+)/i);
+            const optMatch = line.match(/^([A-Z])[\.\)]\s*(.+)/i);
             const matchPairMatch = line.match(/^([1-9])[\.\)]\s*(.+?)\s*<->\s*(.+)/i);
             const expMatch = line.match(/^(?:Explanation|Exp)[:\s]*(.+)/i);
             const pTitleMatch = line.match(/^(?:Passage Title|Title)[:\s]*(.+)/i);
@@ -501,7 +501,7 @@ function App() {
                 const question = activeExam?.questions[currentIndex];
 
                 if (question && (question.type === 'mcq' || question.type === 'true_false')) {
-                    if (['A', 'B', 'C', 'D', 'E', 'T', 'F'].includes(key)) {
+                    if (/^[A-Z]$/.test(key)) {
                         let selectedVal = key;
                         if (question.type === 'true_false') {
                             if (key === 'T') selectedVal = 'True';
@@ -693,7 +693,8 @@ function App() {
                 { id: "A", text: "Option A" },
                 { id: "B", text: "Option B" },
                 { id: "C", text: "Option C" },
-                { id: "D", text: "Option D" }
+                { id: "D", text: "Option D" },
+                { id: "E", text: "Option E" }
             ],
             correctAnswer: "A",
             explanation: ""
