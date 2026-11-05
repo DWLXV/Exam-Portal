@@ -14,6 +14,11 @@ if (!firebase.apps.length) {
 }
 const auth = firebase.auth();
 const db = firebase.firestore();
+try {
+    db.settings({ experimentalForceLongPolling: true });
+} catch (e) {
+    console.warn("Firestore settings notice:", e);
+}
 const storage = firebase.storage();
 
 // --- ADMIN CONFIGURATION ---
@@ -315,7 +320,13 @@ const AuthScreen = ({ onAuthSuccess }) => {
             await auth.signInWithPopup(provider);
         } catch (err) {
             console.error("Google sign-in error:", err);
-            setAuthError(err.message || "Failed to sign in with Google.");
+            if (err.code === 'auth/unauthorized-domain') {
+                setAuthError("Google Sign-In failed: This domain is not authorized in your Firebase Console. If you opened the file directly (file://), Google OAuth requires a web server (like http://localhost). Alternatively, you can use the 'Create Account' / 'Sign In' email fields below!");
+            } else if (err.code === 'auth/popup-closed-by-user') {
+                setAuthError("Google sign-in was cancelled.");
+            } else {
+                setAuthError(err.message || "Failed to sign in with Google.");
+            }
             setIsSubmitting(false);
         }
     };
@@ -351,22 +362,32 @@ const AuthScreen = ({ onAuthSuccess }) => {
 
             setIsSubmitting(true);
             try {
-                const userDoc = await db.collection('usernames').doc(cleanUser).get();
-                if (userDoc.exists) {
-                    setAuthError(`The username @${cleanUser} is already taken. Please choose another.`);
-                    setIsSubmitting(false);
-                    return;
+                // Pre-check if username is taken (if Firestore is online)
+                try {
+                    const userDoc = await db.collection('usernames').doc(cleanUser).get();
+                    if (userDoc && userDoc.exists) {
+                        setAuthError(`The username @${cleanUser} is already taken. Please choose another.`);
+                        setIsSubmitting(false);
+                        return;
+                    }
+                } catch (checkErr) {
+                    console.warn("Username pre-check notice:", checkErr);
                 }
 
+                // Create user in Firebase Auth
                 const userCred = await auth.createUserWithEmailAndPassword(email.trim(), password);
                 const user = userCred.user;
                 const isUserAdmin = user.uid === ADMIN_UID || (user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
 
-                await db.collection('usernames').doc(cleanUser).set({
-                    uid: user.uid,
-                    username: cleanUser,
-                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
+                try {
+                    await db.collection('usernames').doc(cleanUser).set({
+                        uid: user.uid,
+                        username: cleanUser,
+                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                    });
+                } catch (e) {
+                    console.warn("Could not save username doc:", e);
+                }
 
                 const profileData = {
                     uid: user.uid,
@@ -376,13 +397,26 @@ const AuthScreen = ({ onAuthSuccess }) => {
                     role: isUserAdmin ? 'admin' : 'user',
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
-                await db.collection('users').doc(user.uid).set(profileData);
-                await user.updateProfile({ displayName: cleanName });
+
+                try {
+                    await db.collection('users').doc(user.uid).set(profileData);
+                    await user.updateProfile({ displayName: cleanName });
+                } catch (e) {
+                    console.warn("Could not save profile doc:", e);
+                }
 
                 if (onAuthSuccess) onAuthSuccess(user, profileData);
             } catch (err) {
                 console.error("Sign up error:", err);
-                setAuthError(err.message || "Failed to create account.");
+                if (err.code === 'auth/email-already-in-use') {
+                    setAuthError("This email address is already registered. Please switch to 'Sign In' or use a different email.");
+                } else if (err.code === 'auth/operation-not-allowed') {
+                    setAuthError("Email/Password sign-in is not enabled in Firebase Console. Go to Authentication > Sign-in method and enable 'Email/Password'.");
+                } else if (err.code === 'auth/weak-password') {
+                    setAuthError("Password is too weak. Please use at least 6 characters.");
+                } else {
+                    setAuthError(err.message || "Failed to create account.");
+                }
                 setIsSubmitting(false);
             }
         } else {
