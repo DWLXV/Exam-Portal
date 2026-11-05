@@ -7,13 +7,21 @@ const firebaseConfig = {
     storageBucket: "exams-bfd72.firebasestorage.app",
     messagingSenderId: "757559897577",
     appId: "1:757559897577:web:ab3af4b0c8d179bf36af78"
-  };
+};
 
 if (!firebase.apps.length) {
     firebase.initializeApp(firebaseConfig);
 }
+const auth = firebase.auth();
 const db = firebase.firestore();
 const storage = firebase.storage();
+
+// --- ADMIN CONFIGURATION ---
+// Set your Firebase Auth UID here (found in Firebase Console > Authentication > Users).
+// Any user with this UID, or whose email matches ADMIN_EMAIL, or who has role: "admin" in Firestore /users/{uid},
+// will be granted complete administrator privileges across the portal.
+const ADMIN_UID = "l8ly3WOk2VQda4zLmeck4CORKbt1";
+const ADMIN_EMAIL = "eyob5524@gmail.com";
 
 const ImageUploadZone = ({ currentImage, onUploadSuccess }) => {
     const [isDragging, setIsDragging] = useState(false);
@@ -287,6 +295,405 @@ const Passage = ({ title, text, isHTML }) => {
     );
 };
 
+
+const AuthScreen = ({ onAuthSuccess }) => {
+    const [authMode, setAuthMode] = useState('signin');
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [displayName, setDisplayName] = useState('');
+    const [username, setUsername] = useState('');
+    const [showPassword, setShowPassword] = useState(false);
+    const [authError, setAuthError] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
+    const [resetEmailSent, setResetEmailSent] = useState(false);
+
+    const handleGoogleSignIn = async () => {
+        setAuthError('');
+        setIsSubmitting(true);
+        try {
+            const provider = new firebase.auth.GoogleAuthProvider();
+            await auth.signInWithPopup(provider);
+        } catch (err) {
+            console.error("Google sign-in error:", err);
+            setAuthError(err.message || "Failed to sign in with Google.");
+            setIsSubmitting(false);
+        }
+    };
+
+    const handleEmailAuth = async (e) => {
+        if (e) e.preventDefault();
+        setAuthError('');
+
+        if (!email.trim() || !password) {
+            setAuthError("Please fill in all required fields.");
+            return;
+        }
+
+        if (authMode === 'signup') {
+            const cleanUser = username.trim().toLowerCase();
+            const cleanName = displayName.trim();
+            if (!cleanName) {
+                setAuthError("Please enter your display name.");
+                return;
+            }
+            if (!cleanUser) {
+                setAuthError("Please choose a unique username.");
+                return;
+            }
+            if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUser)) {
+                setAuthError("Username must be 3-20 characters long and contain only letters, numbers, and underscores.");
+                return;
+            }
+            if (password.length < 6) {
+                setAuthError("Password must be at least 6 characters.");
+                return;
+            }
+
+            setIsSubmitting(true);
+            try {
+                const userDoc = await db.collection('usernames').doc(cleanUser).get();
+                if (userDoc.exists) {
+                    setAuthError(`The username @${cleanUser} is already taken. Please choose another.`);
+                    setIsSubmitting(false);
+                    return;
+                }
+
+                const userCred = await auth.createUserWithEmailAndPassword(email.trim(), password);
+                const user = userCred.user;
+                const isUserAdmin = user.uid === ADMIN_UID || (user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+
+                await db.collection('usernames').doc(cleanUser).set({
+                    uid: user.uid,
+                    username: cleanUser,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                const profileData = {
+                    uid: user.uid,
+                    email: user.email,
+                    displayName: cleanName,
+                    username: cleanUser,
+                    role: isUserAdmin ? 'admin' : 'user',
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                };
+                await db.collection('users').doc(user.uid).set(profileData);
+                await user.updateProfile({ displayName: cleanName });
+
+                if (onAuthSuccess) onAuthSuccess(user, profileData);
+            } catch (err) {
+                console.error("Sign up error:", err);
+                setAuthError(err.message || "Failed to create account.");
+                setIsSubmitting(false);
+            }
+        } else {
+            setIsSubmitting(true);
+            try {
+                const userCred = await auth.signInWithEmailAndPassword(email.trim(), password);
+                const user = userCred.user;
+                const userDoc = await db.collection('users').doc(user.uid).get();
+                if (userDoc.exists && onAuthSuccess) {
+                    onAuthSuccess(user, userDoc.data());
+                }
+            } catch (err) {
+                console.error("Sign in error:", err);
+                if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
+                    setAuthError("Incorrect email or password. If you haven't registered this account yet, click 'Create Account' above. If your account uses Google, click 'Continue with Google'.");
+                } else if (err.code === 'auth/operation-not-allowed') {
+                    setAuthError("Email/Password sign-in is not enabled in Firebase Console. Go to Authentication > Sign-in method to enable it.");
+                } else {
+                    setAuthError(err.message || "Invalid email or password.");
+                }
+                setIsSubmitting(false);
+            }
+        }
+    };
+
+    const handleForgotPassword = async () => {
+        if (!email.trim()) {
+            setAuthError("Please enter your email address above to receive a password reset link.");
+            return;
+        }
+        try {
+            await auth.sendPasswordResetEmail(email.trim());
+            setResetEmailSent(true);
+            setAuthError('');
+            setTimeout(() => setResetEmailSent(false), 5000);
+        } catch (err) {
+            setAuthError(err.message || "Failed to send reset email.");
+        }
+    };
+
+    return (
+        <div className="min-h-screen bg-gradient-to-br from-slate-50 via-blue-50 to-indigo-100 flex items-center justify-center py-12 px-4 sm:px-6 lg:px-8">
+            <div className="max-w-md w-full bg-white rounded-2xl shadow-xl border border-gray-100 overflow-hidden">
+                <div className="p-8 pb-6 text-center bg-gradient-to-b from-blue-50/50 to-transparent">
+                    <div className="w-14 h-14 mx-auto mb-3 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-2xl shadow-lg shadow-blue-500/25">
+                        EP
+                    </div>
+                    <h2 className="text-2xl font-black text-gray-900 tracking-tight">Exam Portal</h2>
+                    <p className="mt-1 text-xs text-gray-500">
+                        {authMode === 'signin' ? 'Sign in to access your exams and trial history' : 'Create an account to start taking and creating exams'}
+                    </p>
+
+                    <div className="mt-5 grid grid-cols-2 p-1 bg-gray-100 rounded-xl">
+                        <button
+                            type="button"
+                            onClick={() => { setAuthMode('signin'); setAuthError(''); }}
+                            className={`py-2 text-xs font-bold rounded-lg transition-all ${authMode === 'signin' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+                        >
+                            Sign In
+                        </button>
+                        <button
+                            type="button"
+                            onClick={() => { setAuthMode('signup'); setAuthError(''); }}
+                            className={`py-2 text-xs font-bold rounded-lg transition-all ${authMode === 'signup' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+                        >
+                            Create Account
+                        </button>
+                    </div>
+                </div>
+
+                <div className="px-8 pb-8 space-y-4">
+                    <button
+                        type="button"
+                        onClick={handleGoogleSignIn}
+                        disabled={isSubmitting}
+                        className="w-full flex items-center justify-center gap-3 py-2.5 px-4 border border-gray-300 rounded-xl bg-white hover:bg-gray-50 text-gray-700 font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+                    >
+                        <svg className="w-4 h-4" viewBox="0 0 24 24">
+                            <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" />
+                            <path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" />
+                            <path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.06H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.94l2.85-2.22.81-.63z" />
+                            <path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.06l3.66 2.84c.87-2.6 3.3-4.52 6.16-4.52z" />
+                        </svg>
+                        <span>Continue with Google</span>
+                    </button>
+
+                    <div className="flex items-center gap-3 my-2">
+                        <div className="flex-1 h-px bg-gray-200"></div>
+                        <span className="text-[11px] font-semibold text-gray-400 uppercase tracking-wider">or with email</span>
+                        <div className="flex-1 h-px bg-gray-200"></div>
+                    </div>
+
+                    {authError && (
+                        <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 font-medium leading-relaxed">
+                            {authError}
+                        </div>
+                    )}
+
+                    {resetEmailSent && (
+                        <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-700 font-medium">
+                            ✓ Password reset link sent! Please check your email inbox.
+                        </div>
+                    )}
+
+                    <form onSubmit={handleEmailAuth} className="space-y-3">
+                        {authMode === 'signup' && (
+                            <>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">Full Name</label>
+                                    <input
+                                        type="text"
+                                        required
+                                        value={displayName}
+                                        onChange={(e) => setDisplayName(e.target.value)}
+                                        placeholder="e.g. Alex Johnson"
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="block text-xs font-bold text-gray-700 mb-1">
+                                        Unique Username
+                                        <span className="text-[10px] text-gray-400 font-normal ml-1">(for sharing exams)</span>
+                                    </label>
+                                    <div className="relative">
+                                        <span className="absolute left-3 top-2 text-xs font-bold text-gray-400">@</span>
+                                        <input
+                                            type="text"
+                                            required
+                                            value={username}
+                                            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                                            placeholder="alex_j"
+                                            className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none font-medium"
+                                        />
+                                    </div>
+                                    <span className="text-[10px] text-gray-400 mt-0.5 block">3-20 characters: letters, numbers, underscores only.</span>
+                                </div>
+                            </>
+                        )}
+
+                        <div>
+                            <label className="block text-xs font-bold text-gray-700 mb-1">Email Address</label>
+                            <input
+                                type="email"
+                                required
+                                value={email}
+                                onChange={(e) => setEmail(e.target.value)}
+                                placeholder="name@example.com"
+                                className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                            />
+                        </div>
+
+                        <div>
+                            <div className="flex justify-between items-center mb-1">
+                                <label className="block text-xs font-bold text-gray-700">Password</label>
+                                {authMode === 'signin' && (
+                                    <button
+                                        type="button"
+                                        onClick={handleForgotPassword}
+                                        className="text-[11px] text-blue-600 hover:text-blue-800 font-semibold cursor-pointer"
+                                    >
+                                        Forgot?
+                                    </button>
+                                )}
+                            </div>
+                            <div className="relative">
+                                <input
+                                    type={showPassword ? 'text' : 'password'}
+                                    required
+                                    value={password}
+                                    onChange={(e) => setPassword(e.target.value)}
+                                    placeholder={authMode === 'signup' ? 'Min 6 characters' : 'Enter password'}
+                                    className="w-full pr-10 pl-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowPassword(!showPassword)}
+                                    className="absolute right-3 top-2 text-gray-400 hover:text-gray-600 text-xs font-semibold cursor-pointer"
+                                >
+                                    {showPassword ? 'Hide' : 'Show'}
+                                </button>
+                            </div>
+                        </div>
+
+                        <button
+                            type="submit"
+                            disabled={isSubmitting}
+                            className={`w-full py-2.5 mt-2 text-white font-bold text-xs rounded-xl shadow-md transition-all cursor-pointer ${isSubmitting ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 shadow-blue-600/20'}`}
+                        >
+                            {isSubmitting ? 'Processing...' : (authMode === 'signin' ? 'Sign In to Portal' : 'Create My Account')}
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+const ChooseUsernameModal = ({ user, onComplete }) => {
+    const [chosenUsername, setChosenUsername] = useState('');
+    const [name, setName] = useState(user.displayName || '');
+    const [error, setError] = useState('');
+    const [isSaving, setIsSaving] = useState(false);
+
+    const handleSave = async (e) => {
+        if (e) e.preventDefault();
+        const cleanUser = chosenUsername.trim().toLowerCase();
+        if (!cleanUser) {
+            setError("Please enter a username.");
+            return;
+        }
+        if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUser)) {
+            setError("Username must be 3-20 characters long and contain only letters, numbers, and underscores.");
+            return;
+        }
+
+        setIsSaving(true);
+        setError('');
+        try {
+            const checkDoc = await db.collection('usernames').doc(cleanUser).get();
+            if (checkDoc.exists) {
+                setError(`@${cleanUser} is already taken. Please choose another username.`);
+                setIsSaving(false);
+                return;
+            }
+
+            const isUserAdmin = user.uid === ADMIN_UID || (user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+
+            await db.collection('usernames').doc(cleanUser).set({
+                uid: user.uid,
+                username: cleanUser,
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            });
+
+            const profile = {
+                uid: user.uid,
+                email: user.email,
+                displayName: name.trim() || user.displayName || cleanUser,
+                username: cleanUser,
+                photoURL: user.photoURL || '',
+                role: isUserAdmin ? 'admin' : 'user',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            };
+
+            await db.collection('users').doc(user.uid).set(profile);
+            onComplete(profile);
+        } catch (err) {
+            console.error("Error setting username:", err);
+            setError(err.message || "Failed to set username.");
+            setIsSaving(false);
+        }
+    };
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+            <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full">
+                <div className="text-center mb-4">
+                    <div className="w-12 h-12 mx-auto mb-2 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xl">
+                        👤
+                    </div>
+                    <h3 className="text-lg font-bold text-gray-900">Choose Your Username</h3>
+                    <p className="text-xs text-gray-500 mt-1">
+                        Welcome, {user.displayName || 'Friend'}! Pick a unique username so other users and the admin can share exams with you.
+                    </p>
+                </div>
+
+                {error && (
+                    <div className="mb-3 p-2.5 bg-red-50 border border-red-200 rounded-lg text-xs text-red-700 font-medium">
+                        {error}
+                    </div>
+                )}
+
+                <form onSubmit={handleSave} className="space-y-3">
+                    <div>
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Display Name</label>
+                        <input
+                            type="text"
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="Your full name"
+                            className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                        />
+                    </div>
+                    <div>
+                        <label className="block text-xs font-bold text-gray-700 mb-1">Unique Username</label>
+                        <div className="relative">
+                            <span className="absolute left-3 top-2 text-xs font-bold text-gray-400">@</span>
+                            <input
+                                type="text"
+                                value={chosenUsername}
+                                onChange={(e) => setChosenUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
+                                placeholder="cool_username"
+                                className="w-full pl-7 pr-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none font-medium"
+                            />
+                        </div>
+                        <span className="text-[10px] text-gray-400 mt-0.5 block">3-20 characters: letters, numbers, underscores only.</span>
+                    </div>
+
+                    <button
+                        type="submit"
+                        disabled={isSaving}
+                        className={`w-full py-2.5 mt-2 text-white font-bold text-xs rounded-xl shadow transition-colors cursor-pointer ${isSaving ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                    >
+                        {isSaving ? 'Saving Profile...' : 'Complete Registration'}
+                    </button>
+                </form>
+            </div>
+        </div>
+    );
+};
+
+
 function App() {
     const [exams, setExams] = useState([]);
     const [loadingExams, setLoadingExams] = useState(true);
@@ -300,24 +707,43 @@ function App() {
     const [score, setScore] = useState(0);
     const [manualOverrides, setManualOverrides] = useState({});
     const [uatSection, setUatSection] = useState(null);
+    const [submissionDate, setSubmissionDate] = useState(null);
 
-    const [highScores, setHighScores] = useState(() => {
-        try {
-            const saved = localStorage.getItem('exam_high_scores');
-            return saved ? JSON.parse(saved) : {};
-        } catch (e) {
-            return {};
-        }
-    });
+    // Auth & User Profile State
+    const [currentUser, setCurrentUser] = useState(null);
+    const [userProfile, setUserProfile] = useState(null);
+    const [authLoading, setAuthLoading] = useState(true);
+    const [showChooseUsernameModal, setShowChooseUsernameModal] = useState(false);
+    const [googleUserPendingUsername, setGoogleUserPendingUsername] = useState(null);
 
-    const [examHistory, setExamHistory] = useState(() => {
-        try {
-            const saved = localStorage.getItem('exam_history_logs');
-            return saved ? JSON.parse(saved) : {};
-        } catch (e) {
-            return {};
-        }
-    });
+    // Dashboard Tabs: 'all', 'universal', 'my_exams', 'shared', 'public', 'admin_console'
+    const [dashboardTab, setDashboardTab] = useState('all');
+
+    // Share Modal State
+    const [sharingExam, setSharingExam] = useState(null);
+    const [shareVisibility, setShareVisibility] = useState('private');
+    const [shareWithAdmin, setShareWithAdmin] = useState(true);
+    const [shareUserSearch, setShareUserSearch] = useState('');
+    const [shareSearchResults, setShareSearchResults] = useState([]);
+    const [isSearchingUsers, setIsSearchingUsers] = useState(false);
+    const [selectedShareUsers, setSelectedShareUsers] = useState([]);
+    const [isSavingShare, setIsSavingShare] = useState(false);
+
+    // Add Exam Modal: destination ('universal' | 'userExam') & visibility ('private' | 'public')
+    const [examDestination, setExamDestination] = useState('universal');
+    const [examVisibility, setExamVisibility] = useState('private');
+
+    // Admin Console states
+    const [allUsersList, setAllUsersList] = useState([]);
+    const [loadingAllUsers, setLoadingAllUsers] = useState(false);
+    const [selectedAdminUserFilter, setSelectedAdminUserFilter] = useState(null);
+
+    // Last recorded attempt Firestore ID
+    const [lastSubmissionDocId, setLastSubmissionDocId] = useState(null);
+
+    // High Scores & History states (backed by Firestore)
+    const [highScores, setHighScores] = useState({});
+    const [examHistory, setExamHistory] = useState({});
 
     const [examBlocks, setExamBlocks] = useState([
         { id: 1, startQ: 1, endQ: 60, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }
@@ -380,22 +806,193 @@ function App() {
     const [exportSelectedIds, setExportSelectedIds] = useState(new Set());
     const [copySuccess, setCopySuccess] = useState(false);
 
+    // Admin authorization check
+    const isAdmin = Boolean(
+        (userProfile && userProfile.role === 'admin') ||
+        (currentUser && (currentUser.uid === ADMIN_UID || (currentUser.email && currentUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase())))
+    );
+
+    // Auth State Observer
     useEffect(() => {
-        const fetchExams = async () => {
-            try {
-                setFetchError(null);
-                const snapshot = await db.collection('exams').get();
-                const fetchedList = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-                setExams(fetchedList);
-            } catch (err) {
-                console.error("Error fetching exams: ", err);
-                setFetchError(err.message);
-            } finally {
-                setLoadingExams(false);
+        const unsubscribe = auth.onAuthStateChanged(async (user) => {
+            if (user) {
+                setCurrentUser(user);
+                try {
+                    const userDoc = await db.collection('users').doc(user.uid).get();
+                    if (userDoc.exists) {
+                        setUserProfile(userDoc.data());
+                    } else {
+                        setGoogleUserPendingUsername(user);
+                        setShowChooseUsernameModal(true);
+                    }
+                } catch (err) {
+                    console.error("Error fetching user profile:", err);
+                }
+                loadUserHistory(user.uid);
+            } else {
+                setCurrentUser(null);
+                setUserProfile(null);
+                setHighScores({});
+                setExamHistory({});
             }
-        };
-        fetchExams();
+            setAuthLoading(false);
+        });
+        return () => unsubscribe();
     }, []);
+
+    // Load User History from Firestore with localStorage fallback/migration
+    const loadUserHistory = async (uid) => {
+        try {
+            const attemptsSnap = await db.collection('userHistory').doc(uid).collection('attempts').orderBy('date', 'desc').get();
+            const historyMap = {};
+
+            if (attemptsSnap.empty) {
+                // One-time automatic migration of previous local storage history
+                try {
+                    const localHistStr = localStorage.getItem('exam_history_logs');
+                    if (localHistStr) {
+                        const localHist = JSON.parse(localHistStr);
+                        const batch = db.batch();
+                        let count = 0;
+                        Object.entries(localHist).forEach(([examId, trials]) => {
+                            if (Array.isArray(trials)) {
+                                trials.forEach(trial => {
+                                    const ref = db.collection('userHistory').doc(uid).collection('attempts').doc();
+                                    batch.set(ref, {
+                                        examId: examId,
+                                        score: trial.score || 0,
+                                        total: trial.total || 1,
+                                        scorePct: trial.scorePct || 0,
+                                        date: trial.date || new Date().toISOString()
+                                    });
+                                    count++;
+                                    if (!historyMap[examId]) historyMap[examId] = [];
+                                    historyMap[examId].push({
+                                        id: ref.id,
+                                        score: trial.score || 0,
+                                        total: trial.total || 1,
+                                        scorePct: trial.scorePct || 0,
+                                        date: trial.date || new Date().toISOString()
+                                    });
+                                });
+                            }
+                        });
+                        if (count > 0) {
+                            await batch.commit();
+                        }
+                    }
+                } catch (e) {
+                    console.warn("Local storage migration skipped:", e);
+                }
+            } else {
+                attemptsSnap.docs.forEach(doc => {
+                    const data = doc.data();
+                    const eId = data.examId;
+                    if (!historyMap[eId]) historyMap[eId] = [];
+                    historyMap[eId].push({
+                        id: doc.id,
+                        score: data.score,
+                        total: data.total,
+                        scorePct: data.scorePct,
+                        date: data.date
+                    });
+                });
+            }
+
+            setExamHistory(historyMap);
+
+            const highMap = {};
+            Object.entries(historyMap).forEach(([eId, trials]) => {
+                if (trials.length > 0) {
+                    highMap[eId] = Math.max(...trials.map(t => t.scorePct));
+                }
+            });
+            setHighScores(highMap);
+        } catch (err) {
+            console.error("Error loading user history:", err);
+        }
+    };
+
+    // Load Exams from Firestore (/exams and /userExams)
+    const loadExams = async () => {
+        setLoadingExams(true);
+        setFetchError(null);
+        try {
+            // 1. Fetch Universal Exams from /exams
+            const universalSnap = await db.collection('exams').get();
+            const universalExams = universalSnap.docs.map(doc => ({
+                id: doc.id,
+                ...doc.data(),
+                collectionSource: 'exams',
+                isUniversal: true,
+                visibility: 'universal'
+            }));
+
+            // 2. Fetch User-created Exams from /userExams
+            let userExams = [];
+            if (isAdmin) {
+                const userExamsSnap = await db.collection('userExams').get();
+                userExams = userExamsSnap.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data(),
+                    collectionSource: 'userExams',
+                    isUniversal: false
+                }));
+            } else if (currentUser) {
+                const [mySnap, publicSnap, sharedSnap] = await Promise.all([
+                    db.collection('userExams').where('ownerId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
+                    db.collection('userExams').where('visibility', '==', 'public').get().catch(() => ({ docs: [] })),
+                    db.collection('userExams').where('sharedWith', 'array-contains', currentUser.uid).get().catch(() => ({ docs: [] }))
+                ]);
+
+                const mapById = new Map();
+                [...mySnap.docs, ...publicSnap.docs, ...sharedSnap.docs].forEach(doc => {
+                    if (!mapById.has(doc.id)) {
+                        mapById.set(doc.id, {
+                            id: doc.id,
+                            ...doc.data(),
+                            collectionSource: 'userExams',
+                            isUniversal: false
+                        });
+                    }
+                });
+                userExams = Array.from(mapById.values());
+            }
+
+            setExams([...universalExams, ...userExams]);
+        } catch (err) {
+            console.error("Error fetching exams: ", err);
+            setFetchError(err.message);
+        } finally {
+            setLoadingExams(false);
+        }
+    };
+
+    useEffect(() => {
+        if (currentUser) {
+            loadExams();
+        }
+    }, [currentUser, userProfile]);
+
+    // Load all registered users for Admin Console
+    const loadAllUsers = async () => {
+        if (!isAdmin) return;
+        setLoadingAllUsers(true);
+        try {
+            const snap = await db.collection('users').get();
+            setAllUsersList(snap.docs.map(d => d.data()));
+        } catch (err) {
+            console.error("Error loading users:", err);
+        } finally {
+            setLoadingAllUsers(false);
+        }
+    };
+
+    useEffect(() => {
+        if (dashboardTab === 'admin_console' && isAdmin) {
+            loadAllUsers();
+        }
+    }, [dashboardTab, isAdmin]);
 
     useEffect(() => {
         let interval = null;
@@ -631,6 +1228,9 @@ function App() {
             calculatedDurationMinutes = Math.max(1, Math.round(totalSecs / 60));
         }
 
+        const isSavingAsUniversal = isAdmin && examDestination === 'universal';
+        const targetCollection = isSavingAsUniversal ? 'exams' : 'userExams';
+
         const newExamObj = {
             id: generatedId,
             title: examTitle,
@@ -639,11 +1239,19 @@ function App() {
             durationMinutes: calculatedDurationMinutes,
             description: examDescription,
             questions: compiledQuestions,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+            ownerId: currentUser ? currentUser.uid : null,
+            ownerUsername: userProfile ? userProfile.username : 'admin',
+            ownerDisplayName: userProfile ? (userProfile.displayName || userProfile.username) : 'Admin',
+            isUniversal: isSavingAsUniversal,
+            visibility: isSavingAsUniversal ? 'universal' : examVisibility,
+            sharedWith: [],
+            sharedWithUsernames: [],
+            collectionSource: targetCollection
         };
 
         try {
-            await db.collection('exams').doc(generatedId).set(newExamObj);
+            await db.collection(targetCollection).doc(generatedId).set(newExamObj);
             setExams(prev => [newExamObj, ...prev]);
 
             setExamTitle('');
@@ -656,7 +1264,7 @@ function App() {
             setUatMathBlocks([{ id: 2, startQ: 56, endQ: 100, passageTitle: '', passage: '', isHTML: false, blockImage: '', rawText: '' }]);
             setShowAddModal(false);
 
-            alert(`Exam successfully saved with ${compiledQuestions.length} questions!`);
+            alert(`Exam successfully published with ${compiledQuestions.length} questions!`);
         } catch (error) {
             console.error("Error saving exam to Firestore: ", error);
             alert("Failed to save exam: " + error.message);
@@ -728,14 +1336,16 @@ function App() {
             updatedAt: firebase.firestore.FieldValue.serverTimestamp()
         };
 
+        const targetCollection = editingExam.collectionSource === 'userExams' ? 'userExams' : 'exams';
+
         try {
-            await db.collection('exams').doc(editingExam.id).set(updatedExamData, { merge: true });
+            await db.collection(targetCollection).doc(editingExam.id).set(updatedExamData, { merge: true });
             setExams(prev => prev.map(e => e.id === editingExam.id ? updatedExamData : e));
             setEditingExam(null);
             alert("Exam updated successfully!");
         } catch (err) {
             console.error("Error updating exam:", err);
-            alert("Failed to update exam.");
+            alert("Failed to update exam: " + err.message);
         } finally {
             setIsUpdatingExam(false);
         }
@@ -744,20 +1354,30 @@ function App() {
     const handleConfirmDelete = async () => {
         if (!examToDelete) return;
         setIsDeleting(true);
+        const targetCollection = examToDelete.collectionSource === 'userExams' ? 'userExams' : 'exams';
         try {
-            await db.collection('exams').doc(examToDelete.id).delete();
+            await db.collection(targetCollection).doc(examToDelete.id).delete();
+
+            // Clear history for this exam if any
+            if (currentUser) {
+                try {
+                    const snap = await db.collection('userHistory').doc(currentUser.uid).collection('attempts')
+                        .where('examId', '==', examToDelete.id).get();
+                    const batch = db.batch();
+                    snap.docs.forEach(d => batch.delete(d.ref));
+                    await batch.commit();
+                } catch (e) { }
+            }
 
             setExamHistory(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
-                try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
                 return updated;
             });
 
             setHighScores(prev => {
                 const updated = { ...prev };
                 delete updated[examToDelete.id];
-                try { localStorage.setItem('exam_high_scores', JSON.stringify(updated)); } catch (e) { }
                 return updated;
             });
 
@@ -765,7 +1385,7 @@ function App() {
             setExamToDelete(null);
         } catch (err) {
             console.error("Error deleting exam:", err);
-            alert("Failed to delete exam from database.");
+            alert("Failed to delete exam from database: " + err.message);
         } finally {
             setIsDeleting(false);
         }
@@ -847,28 +1467,28 @@ function App() {
     };
 
     const isOriginallyCorrect = (q) => {
-    const userAns = answers[q.id];
-    if (userAns === undefined || userAns === null || userAns === '') return false;
+        const userAns = answers[q.id];
+        if (userAns === undefined || userAns === null || userAns === '') return false;
 
-    if (q.type === 'fill_blank' || q.type === 'short_answer') {
-        const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
-        return correctOpts.includes(String(userAns).trim().toLowerCase());
-    } else if (q.type === 'matching') {
-        let allCorrect = true;
-        if (typeof userAns === 'object' && userAns !== null) {
-            q.pairs.forEach(p => {
-                if (!userAns[p.id] || String(userAns[p.id]).trim() !== String(p.right).trim()) allCorrect = false;
-            });
+        if (q.type === 'fill_blank' || q.type === 'short_answer') {
+            const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
+            return correctOpts.includes(String(userAns).trim().toLowerCase());
+        } else if (q.type === 'matching') {
+            let allCorrect = true;
+            if (typeof userAns === 'object' && userAns !== null) {
+                q.pairs.forEach(p => {
+                    if (!userAns[p.id] || String(userAns[p.id]).trim() !== String(p.right).trim()) allCorrect = false;
+                });
+            } else {
+                allCorrect = false;
+            }
+            return allCorrect;
         } else {
-            allCorrect = false;
+            return String(userAns).trim() === String(q.correctAnswer).trim();
         }
-        return allCorrect;
-    } else {
-        return String(userAns).trim() === String(q.correctAnswer).trim();
-    }
-};
+    };
 
-const isQuestionCorrect = (q) => {
+    const isQuestionCorrect = (q) => {
         if (manualOverrides[q.id] !== undefined) {
             return manualOverrides[q.id];
         }
@@ -901,42 +1521,58 @@ const isQuestionCorrect = (q) => {
         return scoreCount;
     };
 
-    const finalizeAndShowResults = (overrideScore) => {
+    const finalizeAndShowResults = async (overrideScore) => {
         const currentScore = overrideScore !== undefined ? overrideScore : calculateCurrentScore();
         setScore(currentScore);
 
         const totalQ = activeExam.questions.length || 1;
         const scorePct = Math.round((currentScore / totalQ) * 100);
 
-        setHighScores(prev => {
-            const previousHigh = prev[activeExam.id] !== undefined ? prev[activeExam.id] : -1;
-            const newHigh = Math.max(previousHigh, scorePct);
-            const updated = { ...prev, [activeExam.id]: newHigh };
+        const submissionTimestamp = new Date().toISOString();
+        setSubmissionDate(submissionTimestamp);
+
+        let newDocId = null;
+        if (currentUser) {
             try {
-                localStorage.setItem('exam_high_scores', JSON.stringify(updated));
-            } catch (e) { }
-            return updated;
-        });
+                const attemptData = {
+                    examId: activeExam.id,
+                    examTitle: activeExam.title || 'Exam',
+                    collectionSource: activeExam.collectionSource || 'exams',
+                    score: currentScore,
+                    total: totalQ,
+                    scorePct: scorePct,
+                    date: submissionTimestamp
+                };
+                const docRef = await db.collection('userHistory').doc(currentUser.uid).collection('attempts').add(attemptData);
+                newDocId = docRef.id;
+                setLastSubmissionDocId(newDocId);
+            } catch (err) {
+                console.error("Error saving attempt to Firestore:", err);
+            }
+        }
 
         const newRecord = {
+            id: newDocId || submissionTimestamp,
             score: currentScore,
             total: totalQ,
             scorePct: scorePct,
-            date: new Date().toISOString()
+            date: submissionTimestamp
         };
 
         setExamHistory(prev => {
             const updated = { ...prev };
             if (!updated[activeExam.id]) updated[activeExam.id] = [];
             updated[activeExam.id].push(newRecord);
-            try {
-                localStorage.setItem('exam_history_logs', JSON.stringify(updated));
-            } catch (e) { }
             return updated;
         });
 
-        localStorage.removeItem('exam_in_progress');
+        setHighScores(prev => {
+            const previousHigh = prev[activeExam.id] !== undefined ? prev[activeExam.id] : -1;
+            const newHigh = Math.max(previousHigh, scorePct);
+            return { ...prev, [activeExam.id]: newHigh };
+        });
 
+        localStorage.removeItem('exam_in_progress');
         setCurrentView('results');
         setTimerStatus('finished');
     };
@@ -946,7 +1582,7 @@ const isQuestionCorrect = (q) => {
         finalizeAndShowResults(finalScore);
     };
 
-    const handleToggleOverride = (qId, status) => {
+    const handleToggleOverride = async (qId, status) => {
         const updatedOverrides = { ...manualOverrides, [qId]: status };
         setManualOverrides(updatedOverrides);
 
@@ -959,6 +1595,53 @@ const isQuestionCorrect = (q) => {
             }
         });
         setScore(newScore);
+
+        if (submissionDate && activeExam) {
+            const totalQ = activeExam.questions.length || 1;
+            const newScorePct = Math.round((newScore / totalQ) * 100);
+
+            setExamHistory(prev => {
+                const updated = { ...prev };
+                if (updated[activeExam.id]) {
+                    updated[activeExam.id] = updated[activeExam.id].map(trial =>
+                        trial.date === submissionDate
+                            ? { ...trial, score: newScore, total: totalQ, scorePct: newScorePct }
+                            : trial
+                    );
+                }
+                return updated;
+            });
+
+            setExamHistory(latestHistory => {
+                const allTrials = latestHistory[activeExam.id] || [];
+                const newHigh = allTrials.length > 0 ? Math.max(...allTrials.map(t => t.scorePct)) : newScorePct;
+                setHighScores(prev => ({ ...prev, [activeExam.id]: newHigh }));
+                return latestHistory;
+            });
+
+            // Update in Firestore
+            if (currentUser) {
+                try {
+                    if (lastSubmissionDocId) {
+                        await db.collection('userHistory').doc(currentUser.uid).collection('attempts').doc(lastSubmissionDocId).update({
+                            score: newScore,
+                            scorePct: newScorePct
+                        });
+                    } else {
+                        const snap = await db.collection('userHistory').doc(currentUser.uid).collection('attempts')
+                            .where('examId', '==', activeExam.id)
+                            .where('date', '==', submissionDate)
+                            .get();
+                        if (!snap.empty) {
+                            await snap.docs[0].ref.update({ score: newScore, scorePct: newScorePct });
+                            setLastSubmissionDocId(snap.docs[0].id);
+                        }
+                    }
+                } catch (err) {
+                    console.error("Error updating overridden score in Firestore:", err);
+                }
+            }
+        }
     };
 
     const handleReset = () => {
@@ -967,6 +1650,8 @@ const isQuestionCorrect = (q) => {
         setFlagReasons({});
         setManualOverrides({});
         setScore(0);
+        setSubmissionDate(null);
+        setLastSubmissionDocId(null);
         setCurrentIndex(0);
         setShowResetModal(false);
         setTimerStatus('running');
@@ -989,18 +1674,33 @@ const isQuestionCorrect = (q) => {
         setCurrentView('exam');
     };
 
-    const handleDeleteTrial = (examId, trialDate) => {
+    const handleDeleteTrial = async (examId, trialDate, trialDocId) => {
         if (!window.confirm("Are you sure you want to delete this trial record?")) return;
+
+        if (currentUser) {
+            try {
+                if (trialDocId) {
+                    await db.collection('userHistory').doc(currentUser.uid).collection('attempts').doc(trialDocId).delete();
+                } else {
+                    const snap = await db.collection('userHistory').doc(currentUser.uid).collection('attempts')
+                        .where('examId', '==', examId)
+                        .where('date', '==', trialDate)
+                        .get();
+                    snap.docs.forEach(d => d.ref.delete());
+                }
+            } catch (err) {
+                console.error("Error deleting trial from Firestore:", err);
+            }
+        }
 
         setExamHistory(prev => {
             const updated = { ...prev };
             if (updated[examId]) {
-                updated[examId] = updated[examId].filter(t => t.date !== trialDate);
+                updated[examId] = updated[examId].filter(t => t.date !== trialDate && t.id !== trialDocId);
                 if (updated[examId].length === 0) {
                     delete updated[examId];
                 }
             }
-            try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
 
             setHighScores(prevScores => {
                 const updatedScores = { ...prevScores };
@@ -1009,7 +1709,6 @@ const isQuestionCorrect = (q) => {
                 } else {
                     updatedScores[examId] = Math.max(...updated[examId].map(t => t.scorePct));
                 }
-                try { localStorage.setItem('exam_high_scores', JSON.stringify(updatedScores)); } catch (e) { }
                 return updatedScores;
             });
 
@@ -1017,20 +1716,31 @@ const isQuestionCorrect = (q) => {
         });
     };
 
-    const handleClearAllTrials = (examId) => {
+    const handleClearAllTrials = async (examId) => {
         if (!window.confirm("Are you sure you want to delete ALL trial history for this exam?")) return;
+
+        if (currentUser) {
+            try {
+                const snap = await db.collection('userHistory').doc(currentUser.uid).collection('attempts')
+                    .where('examId', '==', examId)
+                    .get();
+                const batch = db.batch();
+                snap.docs.forEach(d => batch.delete(d.ref));
+                await batch.commit();
+            } catch (err) {
+                console.error("Error clearing trials from Firestore:", err);
+            }
+        }
 
         setExamHistory(prev => {
             const updated = { ...prev };
             delete updated[examId];
-            try { localStorage.setItem('exam_history_logs', JSON.stringify(updated)); } catch (e) { }
             return updated;
         });
 
         setHighScores(prev => {
             const updated = { ...prev };
             delete updated[examId];
-            try { localStorage.setItem('exam_high_scores', JSON.stringify(updated)); } catch (e) { }
             return updated;
         });
     };
@@ -1045,6 +1755,8 @@ const isQuestionCorrect = (q) => {
         setCurrentIndex(0);
         setTimerStatus('idle');
         setUatSection(null);
+        setSubmissionDate(null);
+        setLastSubmissionDocId(null);
 
         localStorage.removeItem('exam_in_progress');
         setCurrentView('dashboard');
@@ -1127,6 +1839,86 @@ const isQuestionCorrect = (q) => {
             }
         } catch (err) { }
         document.body.removeChild(textArea);
+    };
+
+    // Sharing handlers
+    const handleOpenShareModal = (exam) => {
+        setSharingExam(exam);
+        setShareVisibility(exam.visibility || 'private');
+        setShareWithAdmin(true);
+        setShareUserSearch('');
+        setShareSearchResults([]);
+
+        const initialUsers = [];
+        if (Array.isArray(exam.sharedWith) && Array.isArray(exam.sharedWithUsernames)) {
+            exam.sharedWith.forEach((uid, idx) => {
+                initialUsers.push({
+                    uid: uid,
+                    username: exam.sharedWithUsernames[idx] || uid
+                });
+            });
+        }
+        setSelectedShareUsers(initialUsers);
+    };
+
+    const handleSearchShareUsers = async (query) => {
+        setShareUserSearch(query);
+        const q = query.trim().toLowerCase();
+        if (q.length < 2) {
+            setShareSearchResults([]);
+            return;
+        }
+        setIsSearchingUsers(true);
+        try {
+            const snap = await db.collection('usernames')
+                .where('username', '>=', q)
+                .where('username', '<=', q + '\uf8ff')
+                .limit(8)
+                .get();
+
+            const results = [];
+            snap.docs.forEach(doc => {
+                const data = doc.data();
+                if (data.uid !== currentUser?.uid) {
+                    results.push({ uid: data.uid, username: data.username });
+                }
+            });
+            setShareSearchResults(results);
+        } catch (err) {
+            console.error("Error searching usernames:", err);
+        } finally {
+            setIsSearchingUsers(false);
+        }
+    };
+
+    const handleSaveSharing = async () => {
+        if (!sharingExam) return;
+        setIsSavingShare(true);
+        try {
+            const sharedUids = selectedShareUsers.map(u => u.uid);
+            const sharedUsernames = selectedShareUsers.map(u => u.username);
+
+            await db.collection('userExams').doc(sharingExam.id).update({
+                visibility: shareVisibility,
+                sharedWith: sharedUids,
+                sharedWithUsernames: sharedUsernames
+            });
+
+            setExams(prev => prev.map(e => e.id === sharingExam.id ? {
+                ...e,
+                visibility: shareVisibility,
+                sharedWith: sharedUids,
+                sharedWithUsernames: sharedUsernames
+            } : e));
+
+            setSharingExam(null);
+            alert("Sharing settings updated successfully!");
+        } catch (err) {
+            console.error("Error updating sharing:", err);
+            alert("Failed to update sharing settings: " + err.message);
+        } finally {
+            setIsSavingShare(false);
+        }
     };
 
     const renderBlockGroup = (blocksList, sectionType) => {
@@ -1222,7 +2014,7 @@ const isQuestionCorrect = (q) => {
                 <button
                     type="button"
                     onClick={() => handleAddBlock(sectionType)}
-                    className="mt-4 w-full py-2.5 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/50 hover:bg-blue-100/50 text-blue-800 text-xs font-bold rounded-xl transition-colors flex justify-center items-center gap-2"
+                    className="mt-4 w-full py-2.5 border-2 border-dashed border-blue-400 hover:border-blue-600 bg-blue-50/50 hover:bg-blue-100/50 text-blue-800 text-xs font-bold rounded-xl transition-colors flex justify-center items-center gap-2 cursor-pointer"
                 >
                     <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
                     Add Another Block
@@ -1232,10 +2024,32 @@ const isQuestionCorrect = (q) => {
     };
 
     const availableSubjects = ['All', ...new Set(exams.map(e => e.subject).filter(Boolean))];
-    const filteredExams = exams.filter(exam => {
+
+    // Filter exams by active Tab
+    const tabFilteredExams = exams.filter(exam => {
+        if (selectedAdminUserFilter) {
+            return exam.ownerId === selectedAdminUserFilter;
+        }
+        if (dashboardTab === 'universal') {
+            return exam.isUniversal || exam.collectionSource === 'exams' || exam.visibility === 'universal';
+        }
+        if (dashboardTab === 'my_exams') {
+            return exam.ownerId === currentUser?.uid;
+        }
+        if (dashboardTab === 'shared') {
+            return exam.sharedWith && exam.sharedWith.includes(currentUser?.uid) && exam.ownerId !== currentUser?.uid;
+        }
+        if (dashboardTab === 'public') {
+            return exam.visibility === 'public' && exam.ownerId !== currentUser?.uid;
+        }
+        return true; // 'all'
+    });
+
+    const filteredExams = tabFilteredExams.filter(exam => {
         const matchesSearch = exam.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
             (exam.description && exam.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
-            (exam.subject && exam.subject.toLowerCase().includes(searchQuery.toLowerCase()));
+            (exam.subject && exam.subject.toLowerCase().includes(searchQuery.toLowerCase())) ||
+            (exam.ownerUsername && exam.ownerUsername.toLowerCase().includes(searchQuery.toLowerCase()));
         const matchesSubject = selectedSubjectFilter === 'All' || exam.subject === selectedSubjectFilter;
         return matchesSearch && matchesSubject;
     });
@@ -1281,26 +2095,294 @@ const isQuestionCorrect = (q) => {
             };
         }
     };
+
     const allAvailableSubjects = Array.from(new Set([...customSubjects, ...exams.map(e => e.subject).filter(Boolean)]));
+
+    // Calculate tab badge counts
+    const tabCounts = {
+        all: exams.length,
+        universal: exams.filter(e => e.isUniversal || e.collectionSource === 'exams' || e.visibility === 'universal').length,
+        my_exams: exams.filter(e => e.ownerId === currentUser?.uid).length,
+        shared: exams.filter(e => e.sharedWith && e.sharedWith.includes(currentUser?.uid) && e.ownerId !== currentUser?.uid).length,
+        public: exams.filter(e => e.visibility === 'public' && e.ownerId !== currentUser?.uid).length
+    };
+
+    // Full screen loading indicator while checking auth
+    if (authLoading) {
+        return (
+            <div className="min-h-screen flex flex-col items-center justify-center bg-gray-50">
+                <div className="w-12 h-12 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mb-4"></div>
+                <p className="text-gray-700 font-bold text-sm">Loading Exam Portal...</p>
+            </div>
+        );
+    }
+
+    // Auth screen if not logged in
+    if (!currentUser) {
+        return <AuthScreen onAuthSuccess={(user, profile) => { setCurrentUser(user); setUserProfile(profile); }} />;
+    }
+
+    // Modal to pick username for Google sign-in users
+    if (showChooseUsernameModal && googleUserPendingUsername) {
+        return (
+            <ChooseUsernameModal
+                user={googleUserPendingUsername}
+                onComplete={(profile) => {
+                    setUserProfile(profile);
+                    setShowChooseUsernameModal(false);
+                    setGoogleUserPendingUsername(null);
+                }}
+            />
+        );
+    }
 
     if (currentView === 'dashboard') {
         return (
-            <div className="min-h-screen bg-gray-50 py-8 px-4 sm:px-6 lg:px-8">
+            <div className="min-h-screen bg-gray-50 py-6 px-4 sm:px-6 lg:px-8">
                 <div className="max-w-6xl mx-auto">
-                    <header className="mb-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4 border-b pb-5">
-                        <div>
-                            <h1 className="text-3xl font-extrabold text-gray-900 tracking-tight">Assessments Dashboard</h1>
-                            <p className="mt-1 text-sm text-gray-500">Manage exams, search questions, or start practice tests.</p>
+                    {/* Top Navigation Bar with User Profile */}
+                    <header className="mb-6 bg-white p-4 sm:p-5 rounded-2xl border border-gray-200 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                            <div className="w-10 h-10 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white font-black text-xl shadow-md shadow-blue-500/20">
+                                EP
+                            </div>
+                            <div>
+                                <h1 className="text-2xl font-extrabold text-gray-900 tracking-tight leading-tight">Exam Portal</h1>
+                                <p className="text-xs text-gray-500">Practice, create, and share comprehensive entrance assessments.</p>
+                            </div>
                         </div>
-                        <button
-                            onClick={() => setShowAddModal(true)}
-                            className="inline-flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg shadow transition-colors shrink-0 text-sm"
-                        >
-                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 4v16m8-8H4"></path></svg>
-                            Add Exam
-                        </button>
+
+                        <div className="flex items-center gap-3 flex-wrap justify-between sm:justify-end">
+                            <div className="flex items-center gap-2.5 bg-gray-50 border border-gray-200 px-3 py-1.5 rounded-xl shadow-xs">
+                                <div className="w-8 h-8 rounded-full bg-blue-100 border border-blue-300 flex items-center justify-center text-blue-700 font-bold text-xs uppercase overflow-hidden shrink-0">
+                                    {currentUser?.photoURL ? (
+                                        <img src={currentUser.photoURL} alt="Avatar" className="w-full h-full object-cover" />
+                                    ) : (
+                                        (userProfile?.displayName || userProfile?.username || 'U').charAt(0).toUpperCase()
+                                    )}
+                                </div>
+                                <div className="text-left">
+                                    <div className="flex items-center gap-1.5 leading-tight">
+                                        <span className="text-xs font-bold text-gray-900 max-w-[130px] sm:max-w-[160px] truncate">
+                                            {userProfile?.displayName || userProfile?.username || currentUser?.email}
+                                        </span>
+                                        {isAdmin && (
+                                            <span className="px-1.5 py-0.5 text-[9px] font-black uppercase tracking-wider rounded bg-amber-100 text-amber-800 border border-amber-300">
+                                                Admin
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 font-medium">
+                                        @{userProfile?.username || 'user'}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <button
+                                onClick={() => {
+                                    setExamDestination(isAdmin ? 'universal' : 'userExam');
+                                    setExamVisibility('private');
+                                    setShowAddModal(true);
+                                }}
+                                className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl shadow transition-colors text-xs cursor-pointer"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 4v16m8-8H4"></path></svg>
+                                Add Exam
+                            </button>
+
+                            <button
+                                onClick={() => auth.signOut()}
+                                title="Sign Out"
+                                className="px-3 py-2 bg-gray-100 hover:bg-red-50 text-gray-600 hover:text-red-600 font-semibold rounded-xl border border-gray-200 transition-colors text-xs flex items-center gap-1 cursor-pointer"
+                            >
+                                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"></path></svg>
+                                <span className="hidden sm:inline">Sign Out</span>
+                            </button>
+                        </div>
                     </header>
 
+                    {/* Navigation Tabs */}
+                    <div className="mb-5 flex items-center gap-2 overflow-x-auto pb-1 border-b border-gray-200">
+                        <button
+                            onClick={() => { setDashboardTab('all'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'all' && !selectedAdminUserFilter ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>All Accessible</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'all' && !selectedAdminUserFilter ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.all}</span>
+                        </button>
+
+                        <button
+                            onClick={() => { setDashboardTab('universal'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'universal' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>📚 Universal Exams</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'universal' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.universal}</span>
+                        </button>
+
+                        <button
+                            onClick={() => { setDashboardTab('my_exams'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'my_exams' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>🗂️ My Exams</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'my_exams' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.my_exams}</span>
+                        </button>
+
+                        <button
+                            onClick={() => { setDashboardTab('shared'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'shared' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>📨 Shared with Me</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'shared' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.shared}</span>
+                        </button>
+
+                        <button
+                            onClick={() => { setDashboardTab('public'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'public' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>🌐 Community Public</span>
+                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'public' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.public}</span>
+                        </button>
+
+                        {isAdmin && (
+                            <button
+                                onClick={() => setDashboardTab('admin_console')}
+                                className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'admin_console' ? 'bg-amber-600 text-white shadow-sm' : 'bg-amber-50 text-amber-800 hover:bg-amber-100 border border-amber-200'}`}
+                            >
+                                <span>🛡️ Admin Console</span>
+                            </button>
+                        )}
+                    </div>
+
+                    {/* Admin Console View */}
+                    {dashboardTab === 'admin_console' && isAdmin && (
+                        <div className="mb-6 space-y-5">
+                            {/* Metric Cards */}
+                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                                <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                                    <div>
+                                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Registered Users</span>
+                                        <h3 className="text-2xl font-black text-gray-900 mt-1">{allUsersList.length}</h3>
+                                    </div>
+                                    <div className="w-12 h-12 rounded-xl bg-blue-50 text-blue-600 flex items-center justify-center text-xl font-bold">
+                                        👥
+                                    </div>
+                                </div>
+                                <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                                    <div>
+                                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">Universal Exams</span>
+                                        <h3 className="text-2xl font-black text-indigo-600 mt-1">
+                                            {exams.filter(e => e.isUniversal || e.collectionSource === 'exams').length}
+                                        </h3>
+                                    </div>
+                                    <div className="w-12 h-12 rounded-xl bg-indigo-50 text-indigo-600 flex items-center justify-center text-xl font-bold">
+                                        🏛️
+                                    </div>
+                                </div>
+                                <div className="bg-white p-4 rounded-2xl border border-gray-200 shadow-sm flex items-center justify-between">
+                                    <div>
+                                        <span className="text-xs font-bold text-gray-500 uppercase tracking-wide">User Created Exams</span>
+                                        <h3 className="text-2xl font-black text-emerald-600 mt-1">
+                                            {exams.filter(e => !e.isUniversal && e.collectionSource === 'userExams').length}
+                                        </h3>
+                                    </div>
+                                    <div className="w-12 h-12 rounded-xl bg-emerald-50 text-emerald-600 flex items-center justify-center text-xl font-bold">
+                                        🗂️
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Users Table */}
+                            <div className="bg-white rounded-2xl border border-gray-200 shadow-sm overflow-hidden">
+                                <div className="p-4 sm:p-5 border-b border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-gray-50/50">
+                                    <div>
+                                        <h3 className="text-base font-bold text-gray-900">All Portal Users</h3>
+                                        <p className="text-xs text-gray-500">View user profiles and filter exams created by individual students.</p>
+                                    </div>
+                                    <button
+                                        onClick={loadAllUsers}
+                                        className="px-3 py-1.5 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer self-start sm:self-auto"
+                                    >
+                                        ↻ Refresh List
+                                    </button>
+                                </div>
+
+                                {loadingAllUsers ? (
+                                    <div className="text-center py-8 text-gray-400 text-xs">Loading registered users...</div>
+                                ) : allUsersList.length === 0 ? (
+                                    <div className="text-center py-8 text-gray-400 text-xs">No registered users found.</div>
+                                ) : (
+                                    <div className="overflow-x-auto">
+                                        <table className="min-w-full divide-y divide-gray-100 text-left text-xs">
+                                            <thead className="bg-gray-50 text-gray-600 uppercase font-semibold text-[10px] tracking-wider">
+                                                <tr>
+                                                    <th className="px-4 py-3">User</th>
+                                                    <th className="px-4 py-3">Username</th>
+                                                    <th className="px-4 py-3">Email</th>
+                                                    <th className="px-4 py-3">Role</th>
+                                                    <th className="px-4 py-3">Exams Created</th>
+                                                    <th className="px-4 py-3 text-right">Actions</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-gray-100 text-gray-700">
+                                                {allUsersList.map(u => {
+                                                    const userExamsCount = exams.filter(e => e.ownerId === u.uid).length;
+                                                    const isFilteringThisUser = selectedAdminUserFilter === u.uid;
+                                                    return (
+                                                        <tr key={u.uid} className={`hover:bg-blue-50/50 transition-colors ${isFilteringThisUser ? 'bg-blue-50' : ''}`}>
+                                                            <td className="px-4 py-3 whitespace-nowrap font-bold text-gray-900 flex items-center gap-2">
+                                                                <div className="w-7 h-7 rounded-full bg-blue-100 text-blue-700 font-bold text-xs flex items-center justify-center overflow-hidden">
+                                                                    {u.displayName ? u.displayName.charAt(0).toUpperCase() : u.username.charAt(0).toUpperCase()}
+                                                                </div>
+                                                                <span>{u.displayName || 'No Name'}</span>
+                                                            </td>
+                                                            <td className="px-4 py-3 whitespace-nowrap font-medium text-gray-600">@{u.username}</td>
+                                                            <td className="px-4 py-3 whitespace-nowrap text-gray-500">{u.email}</td>
+                                                            <td className="px-4 py-3 whitespace-nowrap">
+                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${u.role === 'admin' ? 'bg-amber-100 text-amber-800 border border-amber-300' : 'bg-gray-100 text-gray-600'}`}>
+                                                                    {u.role || 'user'}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-4 py-3 whitespace-nowrap font-bold text-gray-900">{userExamsCount}</td>
+                                                            <td className="px-4 py-3 whitespace-nowrap text-right">
+                                                                <button
+                                                                    onClick={() => {
+                                                                        if (isFilteringThisUser) {
+                                                                            setSelectedAdminUserFilter(null);
+                                                                        } else {
+                                                                            setSelectedAdminUserFilter(u.uid);
+                                                                        }
+                                                                    }}
+                                                                    className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${isFilteringThisUser ? 'bg-blue-600 text-white' : 'bg-gray-100 hover:bg-gray-200 text-gray-700'}`}
+                                                                >
+                                                                    {isFilteringThisUser ? 'Showing Exams ✓' : 'Filter Exams'}
+                                                                </button>
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
+
+                            {selectedAdminUserFilter && (
+                                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl flex items-center justify-between">
+                                    <span className="text-xs font-bold text-blue-900">
+                                        Showing exams created by @{allUsersList.find(u => u.uid === selectedAdminUserFilter)?.username || 'user'}:
+                                    </span>
+                                    <button
+                                        onClick={() => setSelectedAdminUserFilter(null)}
+                                        className="text-xs text-blue-700 hover:text-blue-900 underline font-semibold cursor-pointer"
+                                    >
+                                        Show All Exams
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Search & Subject Filters */}
                     <div className="mb-6 bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row gap-3 items-center justify-between">
                         <div className="relative w-full sm:flex-1">
                             <svg className="w-4 h-4 absolute left-3 top-2.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
@@ -1308,7 +2390,7 @@ const isQuestionCorrect = (q) => {
                                 type="text"
                                 value={searchQuery}
                                 onChange={(e) => setSearchQuery(e.target.value)}
-                                placeholder="Search exams by title, topic, or subject..."
+                                placeholder="Search exams by title, topic, subject, or creator..."
                                 className="w-full pl-9 pr-4 py-1.5 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none"
                             />
                         </div>
@@ -1330,12 +2412,12 @@ const isQuestionCorrect = (q) => {
                         <div className="text-center py-12 bg-red-50 rounded-xl border border-red-200 p-8 shadow-sm">
                             <p className="text-red-700 font-bold text-base mb-1">Failed to load exams from Firebase</p>
                             <p className="text-red-500 font-mono text-xs mb-3">{fetchError}</p>
-                            <p className="text-gray-600 text-xs">Check your Firestore Security Rules or ensure your Firebase v8 CDN scripts are included in your HTML file.</p>
+                            <p className="text-gray-600 text-xs">Ensure your Firestore Security Rules permit read access.</p>
                         </div>
                     ) : filteredExams.length === 0 ? (
                         <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 p-8">
-                            <p className="text-gray-500 mb-4">No matching exams found.</p>
-                            <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300">Clear Search Filters</button>
+                            <p className="text-gray-500 mb-4">No matching exams found in this view.</p>
+                            <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); setDashboardTab('all'); setSelectedAdminUserFilter(null); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 cursor-pointer">Clear Filters</button>
                         </div>
                     ) : (
                         <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3">
@@ -1343,27 +2425,53 @@ const isQuestionCorrect = (q) => {
                                 const topScorePct = highScores[exam.id];
                                 const styling = getExamGradeStyling(topScorePct);
 
+                                const isExamOwner = exam.ownerId === currentUser?.uid;
+                                const canEdit = (exam.isUniversal && isAdmin) || (exam.collectionSource === 'userExams' && (isExamOwner || isAdmin));
+                                const canDelete = (exam.isUniversal && isAdmin) || (exam.collectionSource === 'userExams' && (isExamOwner || isAdmin));
+                                const canShare = !exam.isUniversal && (isExamOwner || isAdmin);
+
                                 return (
                                     <div
                                         key={exam.id}
-                                        className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[2/1] min-h-[105px] ${styling.cardBg}`}
+                                        className={`rounded-xl border transition-all duration-200 flex flex-col justify-between p-3.5 relative group aspect-[2/1] min-h-[115px] ${styling.cardBg}`}
                                     >
                                         <div className="flex flex-wrap justify-between items-start gap-2 mb-1">
-                                            <div className="flex flex-wrap items-center gap-2">
+                                            <div className="flex flex-wrap items-center gap-1.5">
+                                                {/* Origin / Ownership Badge */}
+                                                {exam.isUniversal ? (
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wider bg-indigo-100 text-indigo-800 uppercase border border-indigo-200">
+                                                        🏛️ Universal
+                                                    </span>
+                                                ) : isExamOwner ? (
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
+                                                        {exam.visibility === 'public' ? '🌐 My Public Exam' : (exam.sharedWith && exam.sharedWith.length > 0 ? `👥 Shared (${exam.sharedWith.length})` : '🔒 My Private Exam')}
+                                                    </span>
+                                                ) : (exam.sharedWith && exam.sharedWith.includes(currentUser?.uid)) ? (
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wider bg-emerald-100 text-emerald-800 uppercase border border-emerald-200">
+                                                        📨 Shared by @{exam.ownerUsername || 'user'}
+                                                    </span>
+                                                ) : (
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-extrabold tracking-wider bg-purple-100 text-purple-800 uppercase border border-purple-200">
+                                                        🌐 by @{exam.ownerUsername || 'user'}
+                                                    </span>
+                                                )}
+
                                                 {exam.subject && (exam.type !== 'UAT' || exam.subject.toUpperCase() !== 'UAT') && (
-                                                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-blue-100 text-blue-800 uppercase border border-blue-200">
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider bg-gray-100 text-gray-700 uppercase border border-gray-200">
                                                         {exam.subject}
                                                     </span>
                                                 )}
+
                                                 {exam.type === 'UAT' && (
-                                                    <span className="inline-block px-2.5 py-0.5 rounded-full text-[10px] font-bold tracking-wider bg-purple-100 text-purple-800 uppercase border border-purple-200">
+                                                    <span className="inline-block px-2 py-0.5 rounded-full text-[9px] font-bold tracking-wider bg-purple-100 text-purple-800 uppercase border border-purple-200">
                                                         UAT
                                                     </span>
                                                 )}
+
                                                 {styling.label && (
                                                     <span
                                                         className={styling.badgeClass}
-                                                        title="Highest Score Percentage"
+                                                        title="Your Highest Score"
                                                         style={{ background: styling.gradient }}
                                                     >
                                                         Score: {styling.label}
@@ -1371,16 +2479,29 @@ const isQuestionCorrect = (q) => {
                                                 )}
                                             </div>
 
+                                            {/* Action Icons */}
                                             <div className="flex items-center gap-1">
-                                                <button onClick={() => setSelectedExamStats(exam)} title="Exam Info & History" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
+                                                <button onClick={() => setSelectedExamStats(exam)} title="Exam Info & Your History" className="p-1 text-gray-400 hover:text-blue-600 transition-colors cursor-pointer">
                                                     <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                                 </button>
-                                                <button onClick={() => handleOpenEditModal(exam)} title="Edit Exam" className="p-1 text-gray-400 hover:text-blue-600 transition-colors">
-                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
-                                                </button>
-                                                <button onClick={() => setExamToDelete(exam)} title="Delete Exam Set" className="p-1 text-gray-400 hover:text-red-600 transition-colors">
-                                                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
-                                                </button>
+
+                                                {canShare && (
+                                                    <button onClick={() => handleOpenShareModal(exam)} title="Share Exam with Users" className="p-1 text-gray-400 hover:text-indigo-600 transition-colors cursor-pointer">
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.368 2.684 3 3 0 00-5.368-2.684z"></path></svg>
+                                                    </button>
+                                                )}
+
+                                                {canEdit && (
+                                                    <button onClick={() => handleOpenEditModal(exam)} title="Edit Exam & Questions" className="p-1 text-gray-400 hover:text-blue-600 transition-colors cursor-pointer">
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+                                                    </button>
+                                                )}
+
+                                                {canDelete && (
+                                                    <button onClick={() => setExamToDelete(exam)} title="Delete Exam Set" className="p-1 text-gray-400 hover:text-red-600 transition-colors cursor-pointer">
+                                                        <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
 
@@ -1394,7 +2515,7 @@ const isQuestionCorrect = (q) => {
                                                 <svg className="w-3.5 h-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                                                 {exam.durationMinutes} mins • {exam.questions?.length || 0} Qs
                                             </div>
-                                            <button onClick={() => handleSelectExam(exam)} className="px-3.5 py-1 bg-gray-900 hover:bg-gray-800 text-white text-xs font-semibold rounded-md transition-colors shadow-sm">
+                                            <button onClick={() => handleSelectExam(exam)} className="px-3.5 py-1 bg-gray-900 hover:bg-gray-800 text-white text-xs font-semibold rounded-md transition-colors shadow-sm cursor-pointer">
                                                 Start Exam
                                             </button>
                                         </div>
@@ -1404,18 +2525,24 @@ const isQuestionCorrect = (q) => {
                         </div>
                     )}
 
+                    {/* Exam Info & History Modal */}
                     {selectedExamStats && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-2xl w-full max-h-[90vh] overflow-hidden">
                                 <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
-                                    <h3 className="text-xl font-bold text-gray-900">Exam Info & History</h3>
-                                    <button onClick={() => setSelectedExamStats(null)} className="text-gray-400 hover:text-gray-700">
+                                    <h3 className="text-xl font-bold text-gray-900">Exam Info & Your History</h3>
+                                    <button onClick={() => setSelectedExamStats(null)} className="text-gray-400 hover:text-gray-700 cursor-pointer">
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                     </button>
                                 </div>
                                 <div className="p-6 overflow-y-auto space-y-6 flex-1">
                                     <div>
-                                        <h4 className="text-lg font-bold text-gray-800">{selectedExamStats.title}</h4>
+                                        <div className="flex items-center justify-between">
+                                            <h4 className="text-lg font-bold text-gray-800">{selectedExamStats.title}</h4>
+                                            <span className="text-xs px-2.5 py-0.5 rounded-full font-bold bg-blue-100 text-blue-800">
+                                                {selectedExamStats.isUniversal ? '🏛️ Universal' : `by @${selectedExamStats.ownerUsername || 'user'}`}
+                                            </span>
+                                        </div>
                                         <p className="text-sm text-gray-600 mt-1">{selectedExamStats.description || 'No description provided.'}</p>
                                         <div className="mt-3 grid grid-cols-2 gap-4 text-sm">
                                             <div><span className="font-semibold text-gray-700">Subject:</span> {selectedExamStats.subject}</div>
@@ -1433,8 +2560,9 @@ const isQuestionCorrect = (q) => {
                                                     const updated = { ...selectedExamStats, shuffleQuestions: newVal };
                                                     setSelectedExamStats(updated);
                                                     setExams(prev => prev.map(ex => ex.id === updated.id ? updated : ex));
+                                                    const targetCol = updated.collectionSource === 'userExams' ? 'userExams' : 'exams';
                                                     try {
-                                                        await db.collection('exams').doc(updated.id).update({ shuffleQuestions: newVal });
+                                                        await db.collection(targetCol).doc(updated.id).update({ shuffleQuestions: newVal });
                                                     } catch (err) { console.error(err); }
                                                 }}
                                                 className="w-4 h-4 text-blue-600 rounded border-gray-300 cursor-pointer"
@@ -1442,13 +2570,18 @@ const isQuestionCorrect = (q) => {
                                             <label htmlFor="shuffleToggle" className="text-sm font-medium text-gray-700 cursor-pointer">Shuffle Questions on Start</label>
                                         </div>
                                     </div>
+
+                                    {/* Trial History for this user only */}
                                     <div className="border-t pt-4">
                                         <div className="flex justify-between items-center mb-3">
-                                            <h4 className="font-bold text-gray-800">Trial History</h4>
+                                            <div>
+                                                <h4 className="font-bold text-gray-800">Your Trial History</h4>
+                                                <p className="text-xs text-gray-500">Only visible to your account. Synced securely to your profile.</p>
+                                            </div>
                                             {examHistory[selectedExamStats.id] && examHistory[selectedExamStats.id].length > 0 && (
                                                 <button
                                                     onClick={() => handleClearAllTrials(selectedExamStats.id)}
-                                                    className="text-xs px-2 py-1 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-800 font-semibold rounded border border-red-200 transition-colors"
+                                                    className="text-xs px-2.5 py-1 bg-red-50 text-red-600 hover:bg-red-100 hover:text-red-800 font-semibold rounded-lg border border-red-200 transition-colors cursor-pointer"
                                                 >
                                                     Clear All History
                                                 </button>
@@ -1456,7 +2589,7 @@ const isQuestionCorrect = (q) => {
                                         </div>
 
                                         {(!examHistory[selectedExamStats.id] || examHistory[selectedExamStats.id].length === 0) ? (
-                                            <p className="text-sm text-gray-500">No trials recorded yet.</p>
+                                            <p className="text-sm text-gray-400 italic bg-gray-50 p-4 rounded-xl text-center border border-dashed border-gray-200">No trials recorded yet. Click "Start Exam" to take your first test!</p>
                                         ) : (
                                             <div className="space-y-2">
                                                 <div className="text-sm font-semibold text-gray-600 mb-2">Total Trials: {examHistory[selectedExamStats.id].length}</div>
@@ -1480,9 +2613,9 @@ const isQuestionCorrect = (q) => {
                                                                         <td className="px-4 py-2 whitespace-nowrap text-sm font-medium text-gray-900">{trial.scorePct}%</td>
                                                                         <td className="px-4 py-2 whitespace-nowrap text-right text-sm">
                                                                             <button
-                                                                                onClick={() => handleDeleteTrial(selectedExamStats.id, trial.date)}
-                                                                                className="text-gray-400 hover:text-red-600 transition-colors p-1"
-                                                                                title="Delete Trial"
+                                                                                onClick={() => handleDeleteTrial(selectedExamStats.id, trial.date, trial.id)}
+                                                                                className="text-gray-400 hover:text-red-600 transition-colors p-1 cursor-pointer"
+                                                                                title="Delete Trial Record"
                                                                             >
                                                                                 <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                                                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path>
@@ -1499,12 +2632,183 @@ const isQuestionCorrect = (q) => {
                                     </div>
                                 </div>
                                 <div className="p-4 border-t bg-gray-50 flex justify-end">
-                                    <button onClick={() => setSelectedExamStats(null)} className="px-4 py-2 bg-gray-900 text-white rounded-md text-sm font-medium hover:bg-gray-800">Close</button>
+                                    <button onClick={() => setSelectedExamStats(null)} className="px-4 py-2 bg-gray-900 text-white rounded-md text-sm font-medium hover:bg-gray-800 cursor-pointer">Close</button>
                                 </div>
                             </div>
                         </div>
                     )}
 
+                    {/* Share Modal */}
+                    {sharingExam && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
+                            <div className="bg-white rounded-2xl shadow-2xl flex flex-col max-w-lg w-full max-h-[90vh] overflow-hidden">
+                                <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-xl">🔗</span>
+                                        <div>
+                                            <h3 className="text-lg font-bold text-gray-900">Share Exam</h3>
+                                            <p className="text-xs text-gray-500 truncate max-w-xs">{sharingExam.title}</p>
+                                        </div>
+                                    </div>
+                                    <button onClick={() => setSharingExam(null)} className="text-gray-400 hover:text-gray-700 cursor-pointer">
+                                        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                                    </button>
+                                </div>
+
+                                <div className="p-6 overflow-y-auto space-y-5 flex-1">
+                                    {/* Visibility Option */}
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-800 mb-2 uppercase tracking-wide">
+                                            Exam Visibility
+                                        </label>
+                                        <div className="grid grid-cols-2 gap-3">
+                                            <label className={`flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${shareVisibility === 'private' ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-500/20' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}>
+                                                <div className="flex items-center gap-2 mb-1">
+                                                    <input
+                                                        type="radio"
+                                                        name="shareVis"
+                                                        checked={shareVisibility === 'private'}
+                                                        onChange={() => setShareVisibility('private')}
+                                                        className="text-blue-600 cursor-pointer"
+                                                    />
+                                                    <span className="text-xs font-bold text-gray-900">🔒 Private & Shared</span>
+                                                </div>
+                                                <span className="text-[11px] text-gray-500">Only you and specifically selected users can access.</span>
+                                            </label>
+                                            <label className={`flex flex-col p-3 border rounded-xl cursor-pointer transition-all ${shareVisibility === 'public' ? 'bg-blue-50 border-blue-400 ring-2 ring-blue-500/20' : 'bg-gray-50 border-gray-200 hover:bg-gray-100'}`}>
+                                                <div className="flex items-center gap-2 mb-1">
+                                                    <input
+                                                        type="radio"
+                                                        name="shareVis"
+                                                        checked={shareVisibility === 'public'}
+                                                        onChange={() => setShareVisibility('public')}
+                                                        className="text-blue-600 cursor-pointer"
+                                                    />
+                                                    <span className="text-xs font-bold text-gray-900">🌐 Public Community</span>
+                                                </div>
+                                                <span className="text-[11px] text-gray-500">Visible to all registered students on the portal.</span>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    {/* Share with Admin Checkbox */}
+                                    <div className="p-3 bg-amber-50/70 border border-amber-200 rounded-xl">
+                                        <label className="flex items-start gap-2.5 cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={shareWithAdmin}
+                                                onChange={(e) => setShareWithAdmin(e.target.checked)}
+                                                className="mt-0.5 text-amber-600 rounded cursor-pointer"
+                                            />
+                                            <div>
+                                                <span className="text-xs font-bold text-amber-900">Share with Admin</span>
+                                                <p className="text-[11px] text-amber-700">Allows portal administrator to inspect and assist with this exam.</p>
+                                            </div>
+                                        </label>
+                                    </div>
+
+                                    {/* User Search & Add */}
+                                    <div>
+                                        <label className="block text-xs font-bold text-gray-800 mb-1.5 uppercase tracking-wide">
+                                            Share with Specific Users by Username
+                                        </label>
+                                        <div className="relative">
+                                            <span className="absolute left-3 top-2.5 text-gray-400 font-bold text-xs">@</span>
+                                            <input
+                                                type="text"
+                                                value={shareUserSearch}
+                                                onChange={(e) => handleSearchShareUsers(e.target.value)}
+                                                placeholder="Type a username to search (e.g. alex_smith)..."
+                                                className="w-full pl-7 pr-4 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
+                                            />
+                                        </div>
+
+                                        {isSearchingUsers && (
+                                            <div className="mt-2 text-xs text-gray-400 font-medium py-1">Searching usernames...</div>
+                                        )}
+                                        {shareSearchResults.length > 0 && (
+                                            <div className="mt-2 border border-gray-200 rounded-xl bg-white shadow-md divide-y divide-gray-100 max-h-40 overflow-y-auto">
+                                                {shareSearchResults.map(u => {
+                                                    const isAlreadyAdded = selectedShareUsers.some(su => su.uid === u.uid);
+                                                    return (
+                                                        <div key={u.uid} className="p-2.5 flex items-center justify-between hover:bg-blue-50 transition-colors">
+                                                            <div className="flex items-center gap-2">
+                                                                <div className="w-6 h-6 rounded-full bg-blue-100 text-blue-700 font-bold text-[10px] flex items-center justify-center">
+                                                                    {u.username.charAt(0).toUpperCase()}
+                                                                </div>
+                                                                <span className="text-xs font-bold text-gray-800">@{u.username}</span>
+                                                            </div>
+                                                            <button
+                                                                type="button"
+                                                                disabled={isAlreadyAdded}
+                                                                onClick={() => {
+                                                                    if (!isAlreadyAdded) {
+                                                                        setSelectedShareUsers(prev => [...prev, u]);
+                                                                        setShareUserSearch('');
+                                                                        setShareSearchResults([]);
+                                                                    }
+                                                                }}
+                                                                className={`px-2.5 py-1 text-[11px] font-bold rounded-lg transition-colors cursor-pointer ${isAlreadyAdded ? 'bg-gray-100 text-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700 text-white'}`}
+                                                            >
+                                                                {isAlreadyAdded ? 'Added' : '+ Add'}
+                                                            </button>
+                                                        </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        )}
+
+                                        {/* Currently Shared Users List */}
+                                        <div className="mt-3">
+                                            <span className="text-[11px] font-bold text-gray-600 uppercase tracking-wide block mb-1.5">
+                                                Users with Access ({selectedShareUsers.length})
+                                            </span>
+                                            {selectedShareUsers.length === 0 ? (
+                                                <div className="text-xs text-gray-400 italic bg-gray-50 p-3 rounded-xl border border-dashed border-gray-200 text-center">
+                                                    No specific users added yet. Search above to grant access.
+                                                </div>
+                                            ) : (
+                                                <div className="flex flex-wrap gap-2">
+                                                    {selectedShareUsers.map(u => (
+                                                        <span key={u.uid} className="inline-flex items-center gap-1.5 px-3 py-1 bg-blue-50 border border-blue-200 text-blue-800 rounded-full text-xs font-semibold">
+                                                            @{u.username}
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setSelectedShareUsers(prev => prev.filter(item => item.uid !== u.uid))}
+                                                                className="w-4 h-4 rounded-full hover:bg-blue-200 text-blue-600 hover:text-blue-900 flex items-center justify-center text-[10px] cursor-pointer"
+                                                            >
+                                                                ✕
+                                                            </button>
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                </div>
+
+                                <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                                    <button
+                                        type="button"
+                                        onClick={() => setSharingExam(null)}
+                                        className="px-4 py-2 border rounded-xl text-gray-700 text-xs font-semibold hover:bg-gray-100 cursor-pointer"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={handleSaveSharing}
+                                        disabled={isSavingShare}
+                                        className={`px-5 py-2 text-white font-bold text-xs rounded-xl shadow transition-colors cursor-pointer ${isSavingShare ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                    >
+                                        {isSavingShare ? 'Saving...' : 'Save Sharing Settings'}
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Add Exam Modal */}
                     {showAddModal && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-5xl w-full max-h-[92vh] overflow-hidden">
@@ -1521,19 +2825,81 @@ const isQuestionCorrect = (q) => {
                                                         alert("Sample exam format copied to clipboard!");
                                                     });
                                                 }}
-                                                className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 font-bold rounded border border-purple-200 transition-colors"
+                                                className="text-xs px-2.5 py-1 bg-purple-50 text-purple-700 hover:bg-purple-100 font-bold rounded border border-purple-200 transition-colors cursor-pointer"
                                             >
                                                 📋 Copy AI Format Sample
                                             </button>
                                         </div>
                                     </div>
-                                    <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-gray-700">
+                                    <button onClick={() => setShowAddModal(false)} className="text-gray-400 hover:text-gray-700 cursor-pointer">
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                     </button>
                                 </div>
 
                                 <div className="p-6 overflow-y-auto flex-1">
-                                   <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
+                                    {/* Admin Choice: Universal Exam vs User Exam */}
+                                    {isAdmin && (
+                                        <div className="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded-xl">
+                                            <label className="block text-xs font-bold text-indigo-900 mb-1.5 uppercase tracking-wide">
+                                                Exam Destination & Audience
+                                            </label>
+                                            <div className="flex flex-wrap gap-4 text-xs font-bold">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input
+                                                        type="radio"
+                                                        name="examDest"
+                                                        checked={examDestination === 'universal'}
+                                                        onChange={() => setExamDestination('universal')}
+                                                        className="text-indigo-600"
+                                                    />
+                                                    <span className="text-indigo-950">🏛️ Universal Exam (Visible to ALL students, editable only by Admin)</span>
+                                                </label>
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input
+                                                        type="radio"
+                                                        name="examDest"
+                                                        checked={examDestination === 'userExam'}
+                                                        onChange={() => setExamDestination('userExam')}
+                                                        className="text-indigo-600"
+                                                    />
+                                                    <span className="text-gray-800">👤 Personal Exam (Created under your account)</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    {/* Non-Admin or Admin-Personal Visibility Choice */}
+                                    {(!isAdmin || examDestination === 'userExam') && (
+                                        <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded-xl">
+                                            <label className="block text-xs font-bold text-blue-900 mb-1.5 uppercase tracking-wide">
+                                                Initial Exam Visibility
+                                            </label>
+                                            <div className="flex flex-wrap gap-4 text-xs font-bold">
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input
+                                                        type="radio"
+                                                        name="examVis"
+                                                        checked={examVisibility === 'private'}
+                                                        onChange={() => setExamVisibility('private')}
+                                                        className="text-blue-600"
+                                                    />
+                                                    <span className="text-gray-800">🔒 Private (Only visible to you; shareable later)</span>
+                                                </label>
+                                                <label className="flex items-center gap-2 cursor-pointer">
+                                                    <input
+                                                        type="radio"
+                                                        name="examVis"
+                                                        checked={examVisibility === 'public'}
+                                                        onChange={() => setExamVisibility('public')}
+                                                        className="text-blue-600"
+                                                    />
+                                                    <span className="text-gray-800">🌐 Public (Visible to all students in the Community tab)</span>
+                                                </label>
+                                            </div>
+                                        </div>
+                                    )}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-5 gap-4 bg-gray-50 p-4 rounded-lg border border-gray-200 mb-6">
                                         <div>
                                             <label className="block text-xs font-bold text-gray-700 mb-1">Exam Title *</label>
                                             <input type="text" value={examTitle} onChange={(e) => setExamTitle(e.target.value)} placeholder="e.g. Model Exam 2" className="w-full border border-gray-300 rounded-md p-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none bg-white" />
@@ -1579,7 +2945,7 @@ const isQuestionCorrect = (q) => {
                                                                 setExamSubject(newSub.trim());
                                                             }
                                                         }}
-                                                        className="px-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded border border-blue-200 text-xs"
+                                                        className="px-2 bg-blue-100 hover:bg-blue-200 text-blue-700 font-bold rounded border border-blue-200 text-xs cursor-pointer"
                                                     >+</button>
                                                 )}
                                             </div>
@@ -1662,38 +3028,39 @@ const isQuestionCorrect = (q) => {
                                         </div>
                                     </div>
 
-                                        {examType === 'UAT' ? (
-                                            <div className="border-t pt-4">
-                                                {renderBlockGroup(uatEnglishBlocks, 'english')}
-                                                {renderBlockGroup(uatMathBlocks, 'math')}
-                                            </div>
-                                        ) : (
-                                            <div className="border-t pt-4">
-                                                {renderBlockGroup(examBlocks, 'default')}
-                                            </div>
-                                        )}
-                                    </div>
+                                    {examType === 'UAT' ? (
+                                        <div className="border-t pt-4">
+                                            {renderBlockGroup(uatEnglishBlocks, 'english')}
+                                            {renderBlockGroup(uatMathBlocks, 'math')}
+                                        </div>
+                                    ) : (
+                                        <div className="border-t pt-4">
+                                            {renderBlockGroup(examBlocks, 'default')}
+                                        </div>
+                                    )}
+                                </div>
 
-                                    <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-                                        <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
-                                        <button
-                                            onClick={handleSaveExamToFirestore}
-                                            disabled={isSavingExam}
-                                            className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
-                                        >
-                                            {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
-                                        </button>
-                                    </div>
+                                <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
+                                    <button onClick={() => setShowAddModal(false)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100 cursor-pointer">Cancel</button>
+                                    <button
+                                        onClick={handleSaveExamToFirestore}
+                                        disabled={isSavingExam}
+                                        className={`px-6 py-2 text-white text-sm font-bold rounded-md shadow transition-colors cursor-pointer ${isSavingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-green-600 hover:bg-green-700'}`}
+                                    >
+                                        {isSavingExam ? 'Saving Exam...' : 'Save & Publish Exam'}
+                                    </button>
                                 </div>
                             </div>
+                        </div>
                     )}
 
+                    {/* Edit Exam Modal */}
                     {editingExam && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 p-4">
                             <div className="bg-white rounded-xl shadow-2xl flex flex-col max-w-4xl w-full max-h-[90vh] overflow-hidden">
                                 <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                                     <h3 className="text-xl font-bold text-gray-900">Edit Exam & Questions</h3>
-                                    <button onClick={() => setEditingExam(null)} className="text-gray-400 hover:text-gray-700">
+                                    <button onClick={() => setEditingExam(null)} className="text-gray-400 hover:text-gray-700 cursor-pointer">
                                         <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12"></path></svg>
                                     </button>
                                 </div>
@@ -1748,7 +3115,7 @@ const isQuestionCorrect = (q) => {
                                     <div className="border-t pt-4">
                                         <div className="flex justify-between items-center mb-4">
                                             <h4 className="font-bold text-gray-900 text-base">Questions ({editQuestions.length})</h4>
-                                            <button onClick={handleAddQuestionToEdit} className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded flex items-center gap-1">
+                                            <button onClick={handleAddQuestionToEdit} className="px-3 py-1 bg-green-600 hover:bg-green-700 text-white text-xs font-bold rounded flex items-center gap-1 cursor-pointer">
                                                 + Add Question
                                             </button>
                                         </div>
@@ -1758,7 +3125,7 @@ const isQuestionCorrect = (q) => {
                                                 <div key={qIdx} className="p-4 border rounded-lg bg-gray-50 space-y-3 relative">
                                                     <div className="flex justify-between items-center">
                                                         <span className="font-bold text-gray-800 text-sm">Question {qIdx + 1}</span>
-                                                        <button onClick={() => handleDeleteQuestionFromEdit(qIdx)} className="text-red-500 hover:text-red-700 text-xs font-semibold">
+                                                        <button onClick={() => handleDeleteQuestionFromEdit(qIdx)} className="text-red-500 hover:text-red-700 text-xs font-semibold cursor-pointer">
                                                             Delete Question
                                                         </button>
                                                     </div>
@@ -1895,7 +3262,7 @@ const isQuestionCorrect = (q) => {
                                                                         const newPairs = [...(q.pairs || []), { id: String((q.pairs || []).length + 1), left: '', right: '' }];
                                                                         handleUpdateQuestionField(qIdx, 'pairs', newPairs);
                                                                     }}
-                                                                    className="px-2 py-1 bg-blue-50 text-blue-700 font-bold rounded text-[11px]"
+                                                                    className="px-2 py-1 bg-blue-50 text-blue-700 font-bold rounded text-[11px] cursor-pointer"
                                                                 >
                                                                     + Add Pair
                                                                 </button>
@@ -1931,11 +3298,11 @@ const isQuestionCorrect = (q) => {
                                 </div>
 
                                 <div className="p-4 border-t bg-gray-50 flex justify-end gap-3">
-                                    <button onClick={() => setEditingExam(null)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100">Cancel</button>
+                                    <button onClick={() => setEditingExam(null)} className="px-4 py-2 border rounded-md text-gray-700 text-sm font-medium hover:bg-gray-100 cursor-pointer">Cancel</button>
                                     <button
                                         onClick={handleSaveEditedExam}
                                         disabled={isUpdatingExam}
-                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
+                                        className={`px-5 py-2 text-white text-sm font-bold rounded-md shadow transition-colors cursor-pointer ${isUpdatingExam ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
                                     >
                                         {isUpdatingExam ? 'Saving...' : 'Save Changes'}
                                     </button>
@@ -1944,6 +3311,7 @@ const isQuestionCorrect = (q) => {
                         </div>
                     )}
 
+                    {/* Delete Exam Confirmation Modal */}
                     {examToDelete && (
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 p-4">
                             <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full">
@@ -1952,11 +3320,11 @@ const isQuestionCorrect = (q) => {
                                     Are you sure you want to delete <span className="font-bold text-gray-900">"{examToDelete.title}"</span>? This action cannot be undone.
                                 </p>
                                 <div className="flex justify-end gap-3">
-                                    <button onClick={() => setExamToDelete(null)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium">Cancel</button>
+                                    <button onClick={() => setExamToDelete(null)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md text-sm font-medium cursor-pointer">Cancel</button>
                                     <button
                                         onClick={handleConfirmDelete}
                                         disabled={isDeleting}
-                                        className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium"
+                                        className="px-4 py-2 text-white bg-red-600 hover:bg-red-700 rounded-md text-sm font-medium cursor-pointer"
                                     >
                                         {isDeleting ? 'Deleting...' : 'Delete Exam'}
                                     </button>
@@ -1968,6 +3336,7 @@ const isQuestionCorrect = (q) => {
             </div>
         );
     }
+
 
     const isSubmitted = currentView === 'results';
     const question = activeExam.questions[currentIndex] || activeExam.questions[0];
