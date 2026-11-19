@@ -508,10 +508,11 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
     const [newMessage, setNewMessage] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [adminViewMode, setAdminViewMode] = useState('others'); // 'others', 'active', 'log'
+    const [seenFeedbackIds, setSeenFeedbackIds] = useState([]);
 
-    // Admin-Only Fixes / To-Do List State (ordered 1, 2, 3...)
-    const fixesStorageKey = currentUser ? `admin_fixes_${currentUser.uid}` : 'admin_fixes_guest';
+    // Admin-Only Fixes / To-Do List State (stored ONLY in Firebase Firestore)
     const [adminFixes, setAdminFixes] = useState([]);
+    const [loadingFixes, setLoadingFixes] = useState(false);
     const [fixTitle, setFixTitle] = useState('');
     const [fixDetails, setFixDetails] = useState('');
     const [fixPriorityPos, setFixPriorityPos] = useState(''); // empty = put at end, or number like 1 for 1st
@@ -541,44 +542,66 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
             .map((item, index) => ({ ...item, order: index }));
     };
 
-    const persistAdminFixes = (nextList) => {
+    // Persist Admin Fixes ONLY to Firebase Firestore
+    const persistAdminFixes = async (nextList) => {
         const ordered = normalizeOrders(nextList);
         setAdminFixes(ordered);
-        try {
-            localStorage.setItem(fixesStorageKey, JSON.stringify(ordered));
-        } catch (e) { /* ignore storage errors */ }
 
         if (isAdmin && currentUser) {
-            db.collection('adminFixes').doc(currentUser.uid).set({
-                items: ordered,
-                updatedAt: new Date().toISOString()
-            }, { merge: true }).catch(err => console.warn("Admin fixes sync notice:", err));
+            try {
+                await db.collection('adminFixes').doc(currentUser.uid).set({
+                    items: ordered,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                }, { merge: true });
+            } catch (err) {
+                console.error("Failed to save admin fixes to Firestore:", err);
+                alert("Could not save fix to Firebase: " + err.message);
+            }
         }
     };
 
-    // Load Admin Fixes (only when isAdmin is true)
+    // Load Admin Fixes strictly from Firebase Firestore (only when isAdmin is true)
     useEffect(() => {
-        if (!isAdmin || !currentUser) return;
+        if (!isAdmin || !currentUser) {
+            setAdminFixes([]);
+            return;
+        }
 
-        let localItems = [];
-        try {
-            const saved = JSON.parse(localStorage.getItem(fixesStorageKey) || '[]');
-            if (Array.isArray(saved)) localItems = normalizeOrders(saved);
-        } catch (e) { /* ignore */ }
-        setAdminFixes(localItems);
+        setLoadingFixes(true);
+        const unsubscribe = db.collection('adminFixes').doc(currentUser.uid).onSnapshot((doc) => {
+            if (doc.exists && Array.isArray(doc.data().items)) {
+                setAdminFixes(normalizeOrders(doc.data().items));
+            } else {
+                setAdminFixes([]);
+            }
+            setLoadingFixes(false);
+        }, (err) => {
+            console.error("Error loading admin fixes from Firestore:", err);
+            setLoadingFixes(false);
+        });
 
-        db.collection('adminFixes').doc(currentUser.uid).get()
-            .then((doc) => {
-                if (doc.exists && Array.isArray(doc.data().items)) {
-                    const cloudItems = normalizeOrders(doc.data().items);
-                    setAdminFixes(cloudItems);
-                    try {
-                        localStorage.setItem(fixesStorageKey, JSON.stringify(cloudItems));
-                    } catch (e) { /* ignore */ }
-                }
-            })
-            .catch(() => { /* stay with local items */ });
-    }, [isAdmin, currentUser?.uid, fixesStorageKey]);
+        return () => unsubscribe();
+    }, [isAdmin, currentUser?.uid]);
+
+    // Load seen feedback IDs from Firestore for current user
+    useEffect(() => {
+        if (!currentUser) {
+            setSeenFeedbackIds([]);
+            return;
+        }
+
+        const unsubscribe = db.collection('users').doc(currentUser.uid).onSnapshot((doc) => {
+            if (doc.exists && Array.isArray(doc.data().seenFeedbackIds)) {
+                setSeenFeedbackIds(doc.data().seenFeedbackIds);
+            } else {
+                setSeenFeedbackIds([]);
+            }
+        }, (err) => {
+            console.warn("Seen feedback sync notice:", err);
+        });
+
+        return () => unsubscribe();
+    }, [currentUser?.uid]);
 
     // Move an item to a specific 1-based position (1 = First, 2 = Second, etc.)
     const setItemToPosition = (list, targetId, oneBasedPos) => {
@@ -680,6 +703,10 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
 
     const handleDeleteFix = (fixId) => {
         if (!isAdmin) return;
+        const targetFix = adminFixes.find(item => item.id === fixId);
+        const label = targetFix?.title ? `"${targetFix.title}"` : "this fix item";
+        if (!window.confirm(`Delete ${label} from the Admin Fixes queue?`)) return;
+
         const nextList = adminFixes.filter(item => item.id !== fixId);
         persistAdminFixes(nextList);
         if (editingFixId === fixId) {
@@ -690,9 +717,9 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
         }
     };
 
-    // Load feedback when widget is opened on the feedback tab
+    // Listen to feedback so we can show unseen feedback badge and dismiss once opened & viewed
     useEffect(() => {
-        if (!currentUser || !isOpen || activeTab !== 'feedback') return;
+        if (!currentUser) return;
 
         let query = db.collection('feedbacks');
         if (!isAdmin) {
@@ -715,18 +742,38 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
         });
 
         return () => unsubscribe();
-    }, [currentUser, isAdmin, isOpen, activeTab]);
+    }, [currentUser, isAdmin]);
 
-    // Automatically mark addressed items as seen once user views the feedback tab
+    // Dismiss feedback notifications once the user opens the widget and views the feedback tab
     useEffect(() => {
-        if (isOpen && activeTab === 'feedback' && !isAdmin && currentUser) {
+        if (!isOpen || activeTab !== 'feedback' || !currentUser) return;
+
+        const relevantFeedbacks = feedbacks.filter(f => {
+            if (f.archived) return false;
+            if (isAdmin) return f.userId !== currentUser.uid;
+            return (f.status === 'fixed' || f.status === 'addressed');
+        });
+
+        const unseenIds = relevantFeedbacks
+            .map(f => f.id)
+            .filter(id => !seenFeedbackIds.includes(id));
+
+        if (unseenIds.length > 0) {
+            const mergedSeen = Array.from(new Set([...seenFeedbackIds, ...unseenIds]));
+            setSeenFeedbackIds(mergedSeen);
+            db.collection('users').doc(currentUser.uid).set({
+                seenFeedbackIds: mergedSeen
+            }, { merge: true }).catch(err => console.warn("Error dismissing feedback badge:", err));
+        }
+
+        if (!isAdmin) {
             feedbacks.forEach(item => {
                 if ((item.status === 'fixed' || item.status === 'addressed') && !item.userNotified) {
                     db.collection('feedbacks').doc(item.id).update({ userNotified: true }).catch(err => console.warn(err));
                 }
             });
         }
-    }, [isOpen, activeTab, feedbacks, isAdmin, currentUser]);
+    }, [isOpen, activeTab, feedbacks, isAdmin, currentUser, seenFeedbackIds]);
 
     const handleSendFeedback = async (e) => {
         e.preventDefault();
@@ -802,6 +849,12 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
     const remainingFixesCount = orderedFixes.filter(f => !f.completed).length;
     const visibleFixes = orderedFixes.filter(f => showCompletedFixes ? true : !f.completed);
 
+    const unseenFeedbackCount = feedbacks.filter(f => {
+        if (f.archived || seenFeedbackIds.includes(f.id)) return false;
+        if (isAdmin) return f.userId !== currentUser?.uid;
+        return (f.status === 'fixed' || f.status === 'addressed');
+    }).length;
+
     return (
         <div className="fixed right-0 bottom-24 z-50 flex items-center">
             {!hasOpenedBefore && !isOpen && (
@@ -818,9 +871,9 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
                 title={isAdmin ? 'Feedback & Admin Fixes' : 'Feedback'}
             >
                 <span>{isOpen ? '✕' : '‹'}</span>
-                {isAdmin && remainingFixesCount > 0 && !isOpen && (
-                    <span className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 px-1 bg-amber-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow">
-                        {remainingFixesCount}
+                {unseenFeedbackCount > 0 && !isOpen && (
+                    <span className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 px-1 bg-blue-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow">
+                        {unseenFeedbackCount}
                     </span>
                 )}
             </button>
@@ -936,7 +989,11 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
 
                             {/* Ordered Fixes List */}
                             <div className="flex-1 p-3 overflow-y-auto space-y-2 bg-gray-50/50">
-                                {visibleFixes.length === 0 ? (
+                                {loadingFixes ? (
+                                    <div className="text-center py-8 text-gray-400 text-xs">
+                                        Loading fixes from Firebase...
+                                    </div>
+                                ) : visibleFixes.length === 0 ? (
                                     <div className="text-center py-8 text-gray-400 text-xs">
                                         No items in your fix queue. Add something above whenever an idea comes up!
                                     </div>
