@@ -1,4 +1,4 @@
-﻿# Firestore Security Rules
+# Firestore Security Rules
 
 Copy and paste these security rules into your Firebase Console under:
 **Firebase Console > Firestore Database > Rules**
@@ -78,6 +78,11 @@ service cloud.firestore {
       allow read: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
       allow create: if isAuthenticated() && request.resource.data.userId == request.auth.uid;
       allow update, delete: if isAuthenticated() && (isAdmin() || resource.data.userId == request.auth.uid);
+    }
+
+    // --- Admin-Only Fixes Queue ---
+    match /adminFixes/{userId} {
+      allow read, write: if isAuthenticated() && isAdmin() && request.auth.uid == userId;
     }
   }
 }
