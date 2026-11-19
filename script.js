@@ -1,4 +1,4 @@
-﻿const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef } = React;
 
 const firebaseConfig = {
     apiKey: "AIzaSyABJmXZHH3LVRb7UN_NF9lZd7k05v7rs68",
@@ -15,7 +15,7 @@ if (!firebase.apps.length) {
 const auth = firebase.auth();
 const db = firebase.firestore();
 try {
-    db.settings({ experimentalForceLongPolling: true });
+    db.settings({ experimentalForceLongPolling: false });
 } catch (e) {
     console.warn("Firestore settings notice:", e);
 }
@@ -242,26 +242,30 @@ const parseBlockQuestions = (rawText, defaultPassageTitle, defaultPassage, defau
 
 const MathText = ({ text }) => {
     const containerRef = useRef(null);
+    const str = text || '';
+    const hasMath = /\$|\\\(|\\\[/.test(str);
 
     useEffect(() => {
+        if (!hasMath) return;
         let isCancelled = false;
         const renderMath = () => {
-            if (isCancelled) return;
-            if (containerRef.current) {
-                containerRef.current.textContent = text || '';
-                if (window.MathJax && window.MathJax.typesetPromise) {
-                    window.MathJax.typesetClear([containerRef.current]);
-                    window.MathJax.typesetPromise([containerRef.current]).catch((err) => console.log('MathJax error:', err));
-                } else {
-                    setTimeout(renderMath, 100);
-                }
+            if (isCancelled || !containerRef.current) return;
+            containerRef.current.textContent = str;
+            if (window.MathJax && window.MathJax.typesetPromise) {
+                window.MathJax.typesetPromise([containerRef.current]).catch((err) => console.log('MathJax error:', err));
+            } else {
+                setTimeout(renderMath, 100);
             }
         };
         renderMath();
         return () => { isCancelled = true; };
-    }, [text]);
+    }, [str, hasMath]);
 
-    return <span ref={containerRef} />;
+    if (!hasMath) {
+        return <span>{str}</span>;
+    }
+
+    return <span ref={containerRef}>{str}</span>;
 };
 
 const renderFillBlankText = (text, userVal) => {
@@ -299,18 +303,398 @@ const Passage = ({ title, text, isHTML }) => {
         </div>
     );
 };
+const MatchingQuestionWidget = ({ question, answer, onAnswerChange, isSubmitted }) => {
+    const [selectedLeft, setSelectedLeft] = useState(null);
+    const pairs = question.pairs || [];
+    const rights = question.shuffledRights || pairs.map(p => p.right);
+    const userAnswers = answer || {};
 
-const FeedbackWidget = ({ currentUser, userProfile, isAdmin }) => {
+    const handleLeftClick = (leftId) => {
+        if (isSubmitted) return;
+        setSelectedLeft(selectedLeft === leftId ? null : leftId);
+    };
+
+    const handleRightClick = (rightText) => {
+        if (isSubmitted) return;
+        if (selectedLeft !== null) {
+            const updated = { ...userAnswers, [selectedLeft]: rightText };
+            onAnswerChange(updated);
+            setSelectedLeft(null);
+        }
+    };
+
+    const handleRemoveConnection = (leftId, e) => {
+        e.stopPropagation();
+        if (isSubmitted) return;
+        const updated = { ...userAnswers };
+        delete updated[leftId];
+        onAnswerChange(updated);
+    };
+
+    return (
+        <div className="space-y-4 bg-gradient-to-br from-blue-50/50 to-indigo-50/50 p-6 rounded-2xl border border-blue-200 shadow-sm">
+            <div className="flex justify-between items-center">
+                <div>
+                    <p className="text-xs font-extrabold text-blue-900 uppercase tracking-wider">Interactive Matching Question</p>
+                    <p className="text-xs text-gray-600 mt-0.5">Click an item in Column A, then click its corresponding choice in Column B to connect them.</p>
+                </div>
+                {!isSubmitted && Object.keys(userAnswers).length > 0 && (
+                    <button
+                        type="button"
+                        onClick={() => onAnswerChange({})}
+                        className="text-xs text-red-600 hover:text-red-800 font-bold bg-white px-3 py-1.5 rounded-lg border border-red-200 shadow-xs cursor-pointer"
+                    >
+                        Clear All Connections
+                    </button>
+                )}
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr] gap-4 md:gap-8 items-start relative pt-2">
+                {/* Column A */}
+                <div className="space-y-3">
+                    <div className="text-xs font-bold text-gray-700 uppercase tracking-wider bg-white p-2.5 rounded-xl border border-gray-200 text-center shadow-xs">
+                        Column A (Items)
+                    </div>
+                    {pairs.map((pair) => {
+                        const isConnected = userAnswers[pair.id] !== undefined;
+                        const isSelected = selectedLeft === pair.id;
+                        const connectedRightText = userAnswers[pair.id];
+                        const rightIndex = connectedRightText ? rights.indexOf(connectedRightText) : -1;
+                        const rightLetter = rightIndex >= 0 ? String.fromCharCode(65 + rightIndex) : '';
+
+                        let submitCardStyle = 'bg-white border-gray-200';
+                        if (isSubmitted) {
+                            const isPairCorrect = connectedRightText !== undefined && String(connectedRightText).trim() === String(pair.right).trim();
+                            submitCardStyle = isPairCorrect ? 'bg-emerald-50 border-emerald-300 text-emerald-900' : 'bg-rose-50 border-rose-300 text-rose-900';
+                        } else if (isSelected) {
+                            submitCardStyle = 'bg-blue-100 border-blue-500 ring-2 ring-blue-500/30 shadow-md';
+                        } else if (isConnected) {
+                            submitCardStyle = 'bg-blue-50/70 border-blue-300';
+                        }
+
+                        return (
+                            <div
+                                key={pair.id}
+                                onClick={() => handleLeftClick(pair.id)}
+                                className={`relative p-3.5 rounded-xl border-2 transition-all cursor-pointer flex items-center justify-between shadow-xs ${submitCardStyle}`}
+                            >
+                                <div className="flex items-center gap-3 pr-4">
+                                    <span className="w-7 h-7 rounded-lg bg-blue-600 text-white font-bold text-xs flex items-center justify-center shrink-0 shadow-xs">
+                                        {pair.id}
+                                    </span>
+                                    <span className="text-sm font-semibold">
+                                        <MathText text={pair.left} />
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                    {isConnected && (
+                                        <span className={`text-xs font-bold px-2 py-0.5 rounded-md border ${isSubmitted ? (String(connectedRightText).trim() === String(pair.right).trim() ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-rose-100 text-rose-800 border-rose-200') : 'bg-blue-100 text-blue-800 border-blue-200'}`}>
+                                            ➔ {rightLetter}
+                                        </span>
+                                    )}
+                                    {isConnected && !isSubmitted && (
+                                        <button
+                                            type="button"
+                                            onClick={(e) => handleRemoveConnection(pair.id, e)}
+                                            className="text-gray-400 hover:text-red-600 text-xs font-bold p-1 rounded hover:bg-red-50 cursor-pointer"
+                                            title="Remove connection"
+                                        >
+                                            ✕
+                                        </button>
+                                    )}
+                                    <div className={`w-4 h-4 rounded-full border-2 transition-transform ${
+                                        isSubmitted
+                                            ? (String(connectedRightText).trim() === String(pair.right).trim() ? 'bg-emerald-500 border-emerald-600' : 'bg-rose-500 border-rose-600')
+                                            : isConnected
+                                                ? 'bg-blue-600 border-blue-700 scale-110 shadow-sm'
+                                                : isSelected
+                                                    ? 'bg-blue-600 border-blue-700 scale-125 animate-pulse'
+                                                    : 'bg-white border-gray-400'
+                                    }`} />
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+
+                {/* Gap Divider */}
+                <div className="hidden md:flex flex-col items-center justify-center self-stretch py-4">
+                    <div className="w-px h-full bg-blue-200/60 my-auto"></div>
+                </div>
+
+                {/* Column B */}
+                <div className="space-y-3">
+                    <div className="text-xs font-bold text-gray-700 uppercase tracking-wider bg-white p-2.5 rounded-xl border border-gray-200 text-center shadow-xs">
+                        Column B (Choices)
+                    </div>
+                    {rights.map((rightText, rIdx) => {
+                        const optionLetter = String.fromCharCode(65 + rIdx);
+                        const connectedLeftId = Object.entries(userAnswers).find(([lId, rVal]) => rVal === rightText)?.[0];
+                        const isConnected = connectedLeftId !== undefined;
+
+                        return (
+                            <div
+                                key={rIdx}
+                                onClick={() => handleRightClick(rightText)}
+                                className={`relative p-3.5 rounded-xl border-2 transition-all cursor-pointer flex items-center justify-between shadow-xs ${
+                                    isSubmitted
+                                        ? 'bg-white border-gray-200'
+                                        : selectedLeft !== null
+                                            ? 'bg-white border-blue-300 hover:bg-blue-50/60 hover:border-blue-500 shadow-sm'
+                                            : isConnected
+                                                ? 'bg-blue-50/70 border-blue-300'
+                                                : 'bg-white border-gray-200 hover:bg-gray-50'
+                                }`}
+                            >
+                                <div className="flex items-center gap-3">
+                                    <div className={`w-4 h-4 rounded-full border-2 transition-transform ${
+                                        isConnected
+                                            ? 'bg-blue-600 border-blue-700 scale-110 shadow-sm'
+                                            : selectedLeft !== null
+                                                ? 'bg-blue-600 border-blue-700 animate-pulse'
+                                                : 'bg-white border-gray-400'
+                                    }`} />
+                                    <span className="text-sm font-semibold text-gray-800">
+                                        <MathText text={rightText} />
+                                    </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                    {isConnected && (
+                                        <span className="text-xs font-bold text-blue-800 bg-blue-100 px-2 py-0.5 rounded-md border border-blue-200">
+                                            {connectedLeftId} ➔
+                                        </span>
+                                    )}
+                                    <span className="w-7 h-7 rounded-lg bg-indigo-100 text-indigo-800 font-extrabold text-xs flex items-center justify-center shrink-0 border border-indigo-200 shadow-xs">
+                                        {optionLetter}
+                                    </span>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
+
+            {!isSubmitted && (
+                <div className="pt-3 border-t border-blue-100 text-xs text-gray-700 flex items-center gap-2 flex-wrap">
+                    <span className="font-bold text-blue-900">Connected Pairs:</span>
+                    {Object.keys(userAnswers).length === 0 ? (
+                        <span className="italic text-gray-400">None connected yet. Click any item in Column A, then its match in Column B.</span>
+                    ) : (
+                        Object.entries(userAnswers).map(([lId, rVal]) => {
+                            const rightIndex = rights.indexOf(rVal);
+                            const rLetter = rightIndex >= 0 ? String.fromCharCode(65 + rightIndex) : '?';
+                            return (
+                                <span key={lId} className="px-3 py-1 bg-white border border-blue-200 rounded-lg font-bold text-blue-900 shadow-xs flex items-center gap-1.5">
+                                    <span>Item {lId}</span>
+                                    <span className="text-blue-500">🔗</span>
+                                    <span>Choice {rLetter}</span>
+                                </span>
+                            );
+                        })
+                    )}
+                </div>
+            )}
+        </div>
+    );
+};
+const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, activeExamTitle }) => {
     const [isOpen, setIsOpen] = useState(false);
+    const [activeTab, setActiveTab] = useState('feedback'); // 'feedback' for everyone, 'admin_fixes' only for admin
+
+    // Feedback State
     const [feedbacks, setFeedbacks] = useState([]);
     const [newMessage, setNewMessage] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
-    const [adminFilter, setAdminFilter] = useState('all');
+    const [adminViewMode, setAdminViewMode] = useState('others'); // 'others', 'active', 'log'
 
+    // Admin-Only Fixes / To-Do List State (ordered 1, 2, 3...)
+    const fixesStorageKey = currentUser ? `admin_fixes_${currentUser.uid}` : 'admin_fixes_guest';
+    const [adminFixes, setAdminFixes] = useState([]);
+    const [fixTitle, setFixTitle] = useState('');
+    const [fixDetails, setFixDetails] = useState('');
+    const [fixPriorityPos, setFixPriorityPos] = useState(''); // empty = put at end, or number like 1 for 1st
+    const [editingFixId, setEditingFixId] = useState(null);
+    const [showCompletedFixes, setShowCompletedFixes] = useState(true);
+
+    const [hasOpenedBefore, setHasOpenedBefore] = useState(() => {
+        return localStorage.getItem('has_opened_feedback_widget') === 'true';
+    });
+
+    const handleToggleOpen = () => {
+        const nextState = !isOpen;
+        setIsOpen(nextState);
+        if (nextState) {
+            setActiveTab('feedback');
+            if (!hasOpenedBefore) {
+                setHasOpenedBefore(true);
+                localStorage.setItem('has_opened_feedback_widget', 'true');
+            }
+        }
+    };
+
+    // Normalize order 0..n-1 cleanly
+    const normalizeOrders = (list) => {
+        return [...list]
+            .sort((a, b) => (a.order ?? 9999) - (b.order ?? 9999))
+            .map((item, index) => ({ ...item, order: index }));
+    };
+
+    const persistAdminFixes = (nextList) => {
+        const ordered = normalizeOrders(nextList);
+        setAdminFixes(ordered);
+        try {
+            localStorage.setItem(fixesStorageKey, JSON.stringify(ordered));
+        } catch (e) { /* ignore storage errors */ }
+
+        if (isAdmin && currentUser) {
+            db.collection('adminFixes').doc(currentUser.uid).set({
+                items: ordered,
+                updatedAt: new Date().toISOString()
+            }, { merge: true }).catch(err => console.warn("Admin fixes sync notice:", err));
+        }
+    };
+
+    // Load Admin Fixes (only when isAdmin is true)
     useEffect(() => {
-        if (!currentUser) return;
-        
-        let query = db.collection('feedbacks').orderBy('createdAt', 'desc');
+        if (!isAdmin || !currentUser) return;
+
+        let localItems = [];
+        try {
+            const saved = JSON.parse(localStorage.getItem(fixesStorageKey) || '[]');
+            if (Array.isArray(saved)) localItems = normalizeOrders(saved);
+        } catch (e) { /* ignore */ }
+        setAdminFixes(localItems);
+
+        db.collection('adminFixes').doc(currentUser.uid).get()
+            .then((doc) => {
+                if (doc.exists && Array.isArray(doc.data().items)) {
+                    const cloudItems = normalizeOrders(doc.data().items);
+                    setAdminFixes(cloudItems);
+                    try {
+                        localStorage.setItem(fixesStorageKey, JSON.stringify(cloudItems));
+                    } catch (e) { /* ignore */ }
+                }
+            })
+            .catch(() => { /* stay with local items */ });
+    }, [isAdmin, currentUser?.uid, fixesStorageKey]);
+
+    // Move an item to a specific 1-based position (1 = First, 2 = Second, etc.)
+    const setItemToPosition = (list, targetId, oneBasedPos) => {
+        const sorted = normalizeOrders(list);
+        const movingItem = sorted.find(item => item.id === targetId);
+        if (!movingItem) return sorted;
+
+        const remaining = sorted.filter(item => item.id !== targetId);
+        const parsedPos = parseInt(oneBasedPos, 10);
+
+        if (isNaN(parsedPos) || parsedPos <= 1) {
+            remaining.unshift(movingItem);
+        } else if (parsedPos > remaining.length) {
+            remaining.push(movingItem);
+        } else {
+            remaining.splice(parsedPos - 1, 0, movingItem);
+        }
+
+        return remaining.map((item, idx) => ({ ...item, order: idx }));
+    };
+
+    // Quick button: make this item #1 (first to work on)
+    const handleMakeFirst = (fixId) => {
+        const next = setItemToPosition(adminFixes, fixId, 1);
+        persistAdminFixes(next);
+    };
+
+    // Change position to any rank (1, 2, 3...)
+    const handleChangeRank = (fixId, newRank) => {
+        const next = setItemToPosition(adminFixes, fixId, newRank);
+        persistAdminFixes(next);
+    };
+
+    const handleSaveFix = (e) => {
+        e.preventDefault();
+        if (!isAdmin) return;
+        const cleanTitle = fixTitle.trim();
+        if (!cleanTitle) return;
+
+        const cleanDetails = fixDetails.trim();
+        const nowIso = new Date().toISOString();
+
+        let nextList;
+        if (editingFixId) {
+            nextList = adminFixes.map(item => item.id === editingFixId
+                ? {
+                    ...item,
+                    title: cleanTitle,
+                    details: cleanDetails,
+                    context: activeExamTitle || item.context || '',
+                    updatedAt: nowIso
+                }
+                : item
+            );
+            if (fixPriorityPos !== '') {
+                nextList = setItemToPosition(nextList, editingFixId, fixPriorityPos);
+            }
+            setEditingFixId(null);
+        } else {
+            const newId = `fix-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+            const newFix = {
+                id: newId,
+                title: cleanTitle,
+                details: cleanDetails,
+                context: activeExamTitle || '',
+                completed: false,
+                order: adminFixes.length,
+                createdAt: nowIso,
+                updatedAt: nowIso
+            };
+            nextList = [...adminFixes, newFix];
+            if (fixPriorityPos !== '') {
+                nextList = setItemToPosition(nextList, newId, fixPriorityPos);
+            }
+        }
+
+        persistAdminFixes(nextList);
+        setFixTitle('');
+        setFixDetails('');
+        setFixPriorityPos('');
+    };
+
+    const handleToggleFixCompleted = (fixId) => {
+        if (!isAdmin) return;
+        const nextList = adminFixes.map(item =>
+            item.id === fixId
+                ? { ...item, completed: !item.completed, updatedAt: new Date().toISOString() }
+                : item
+        );
+        persistAdminFixes(nextList);
+    };
+
+    const handleStartEditFix = (fix, index) => {
+        setEditingFixId(fix.id);
+        setFixTitle(fix.title || '');
+        setFixDetails(fix.details || '');
+        setFixPriorityPos(String(index + 1));
+    };
+
+    const handleDeleteFix = (fixId) => {
+        if (!isAdmin) return;
+        const nextList = adminFixes.filter(item => item.id !== fixId);
+        persistAdminFixes(nextList);
+        if (editingFixId === fixId) {
+            setEditingFixId(null);
+            setFixTitle('');
+            setFixDetails('');
+            setFixPriorityPos('');
+        }
+    };
+
+    // Load feedback when widget is opened on the feedback tab
+    useEffect(() => {
+        if (!currentUser || !isOpen || activeTab !== 'feedback') return;
+
+        let query = db.collection('feedbacks');
         if (!isAdmin) {
             query = db.collection('feedbacks').where('userId', '==', currentUser.uid);
         }
@@ -331,7 +715,18 @@ const FeedbackWidget = ({ currentUser, userProfile, isAdmin }) => {
         });
 
         return () => unsubscribe();
-    }, [currentUser, isAdmin]);
+    }, [currentUser, isAdmin, isOpen, activeTab]);
+
+    // Automatically mark addressed items as seen once user views the feedback tab
+    useEffect(() => {
+        if (isOpen && activeTab === 'feedback' && !isAdmin && currentUser) {
+            feedbacks.forEach(item => {
+                if ((item.status === 'fixed' || item.status === 'addressed') && !item.userNotified) {
+                    db.collection('feedbacks').doc(item.id).update({ userNotified: true }).catch(err => console.warn(err));
+                }
+            });
+        }
+    }, [isOpen, activeTab, feedbacks, isAdmin, currentUser]);
 
     const handleSendFeedback = async (e) => {
         e.preventDefault();
@@ -345,8 +740,8 @@ const FeedbackWidget = ({ currentUser, userProfile, isAdmin }) => {
                 displayName: userProfile?.displayName || userProfile?.username || 'User',
                 message: newMessage.trim(),
                 status: 'pending',
-                priority: 'medium',
-                adminNotes: '',
+                archived: false,
+                userNotified: false,
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             });
             setNewMessage('');
@@ -363,6 +758,7 @@ const FeedbackWidget = ({ currentUser, userProfile, isAdmin }) => {
         try {
             await db.collection('feedbacks').doc(feedbackId).update({
                 status: newStatus,
+                userNotified: false,
                 updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
         } catch (err) {
@@ -370,214 +766,387 @@ const FeedbackWidget = ({ currentUser, userProfile, isAdmin }) => {
         }
     };
 
-    const handleUpdatePriority = async (feedbackId, newPriority) => {
+    const handleArchiveFeedback = async (feedbackId, archiveState) => {
         if (!isAdmin) return;
         try {
             await db.collection('feedbacks').doc(feedbackId).update({
-                priority: newPriority
+                archived: archiveState,
+                updatedAt: firebase.firestore.FieldValue.serverTimestamp()
             });
         } catch (err) {
-            console.error("Error updating priority:", err);
+            console.error("Error archiving feedback:", err);
         }
     };
 
-    const handleSaveAdminNotes = async (feedbackId, notes) => {
+    const handleDeleteFeedback = async (feedbackId) => {
         if (!isAdmin) return;
+        if (!window.confirm("Are you sure you want to permanently delete this feedback item?")) return;
         try {
-            await db.collection('feedbacks').doc(feedbackId).update({
-                adminNotes: notes
-            });
+            await db.collection('feedbacks').doc(feedbackId).delete();
         } catch (err) {
-            console.error("Error saving admin notes:", err);
+            console.error("Error deleting feedback:", err);
+            alert("Failed to delete feedback: " + err.message);
         }
     };
 
-    const pendingCount = isAdmin 
-        ? feedbacks.filter(f => f.status === 'pending' || f.status === 'addressed').length
-        : feedbacks.filter(f => (f.status === 'fixed' || f.status === 'addressed') && !f.userNotified).length;
-
-    const filteredFeedbacks = feedbacks.filter(f => {
-        if (!isAdmin) return true;
-        if (adminFilter === 'pending') return f.status === 'pending';
-        if (adminFilter === 'fixed') return f.status === 'fixed' || f.status === 'addressed';
-        return true;
+    const displayedFeedbacks = feedbacks.filter(f => {
+        if (isAdmin) {
+            if (adminViewMode === 'others') return !f.archived && f.userId !== currentUser?.uid;
+            if (adminViewMode === 'active') return !f.archived;
+            return f.archived;
+        }
+        return !f.archived;
     });
 
+    const orderedFixes = normalizeOrders(adminFixes);
+    const remainingFixesCount = orderedFixes.filter(f => !f.completed).length;
+    const visibleFixes = orderedFixes.filter(f => showCompletedFixes ? true : !f.completed);
+
     return (
-        <div className="fixed bottom-6 right-6 z-50">
+        <div className="fixed right-0 bottom-24 z-50 flex items-center">
+            {!hasOpenedBefore && !isOpen && (
+                <div className="absolute right-8 bg-gray-900 text-white text-[11px] font-medium py-1 px-2.5 rounded-md shadow-md animate-bounce pointer-events-none whitespace-nowrap flex items-center gap-1.5">
+                    <span>{isAdmin ? 'Feedback & Admin Fixes' : 'Feedback'}</span>
+                    <span className="text-gray-400 font-mono">→</span>
+                </div>
+            )}
+
             <button
-                onClick={() => setIsOpen(!isOpen)}
-                className="relative group flex items-center justify-center w-14 h-14 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-xl transition-all duration-300 hover:scale-105 cursor-pointer"
-                title="Feedback & Suggestions"
+                type="button"
+                onClick={handleToggleOpen}
+                className="relative bg-white hover:bg-gray-50 text-gray-500 hover:text-gray-800 border border-gray-300 border-r-0 rounded-l-md shadow-xs py-2 px-1.5 flex items-center justify-center transition-all cursor-pointer text-xs font-mono font-bold"
+                title={isAdmin ? 'Feedback & Admin Fixes' : 'Feedback'}
             >
-                <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                </svg>
-                {pendingCount > 0 && (
-                    <span className="absolute -top-1 -right-1 w-6 h-6 bg-red-500 text-white text-[11px] font-black rounded-full flex items-center justify-center border-2 border-white shadow-md animate-bounce">
-                        {pendingCount}
+                <span>{isOpen ? '✕' : '‹'}</span>
+                {isAdmin && remainingFixesCount > 0 && !isOpen && (
+                    <span className="absolute -top-1.5 -left-1.5 min-w-[16px] h-4 px-1 bg-amber-600 text-white text-[9px] font-bold rounded-full flex items-center justify-center shadow">
+                        {remainingFixesCount}
                     </span>
                 )}
             </button>
 
             {isOpen && (
-                <div className="absolute bottom-16 right-0 w-80 sm:w-96 bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden flex flex-col h-[500px]">
-                    <div className="bg-gradient-to-r from-blue-600 to-indigo-600 p-4 text-white flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                            <div className="w-8 h-8 rounded-lg bg-white/20 flex items-center justify-center font-bold text-sm">
-                                💬
-                            </div>
-                            <div>
-                                <h3 className="font-bold text-sm">
-                                    {isAdmin ? 'Admin Feedback Manager' : 'Portal Feedback & Suggestions'}
-                                </h3>
-                                <p className="text-[10px] text-blue-100">
-                                    {isAdmin ? 'Review & manage user feedback' : 'Help us improve your exam experience'}
-                                </p>
-                            </div>
-                        </div>
+                <div className="absolute bottom-0 right-6 w-80 sm:w-96 bg-white rounded-xl shadow-xl border border-gray-200 overflow-hidden flex flex-col h-[490px]">
+                    {/* Header */}
+                    <div className="p-3 border-b border-gray-200 flex items-center justify-between bg-gray-50">
+                        <span className="font-bold text-xs text-gray-800">
+                            {activeTab === 'admin_fixes'
+                                ? 'Admin Fixes & Feature Queue'
+                                : (isAdmin ? 'Feedback & Others\' Feedback' : 'My Feedback')}
+                        </span>
                         <button
+                            type="button"
                             onClick={() => setIsOpen(false)}
-                            className="w-7 h-7 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center text-white text-xs font-bold cursor-pointer"
+                            className="w-6 h-6 rounded-full hover:bg-gray-200 flex items-center justify-center text-gray-500 text-xs font-bold cursor-pointer"
                         >
                             ✕
                         </button>
                     </div>
 
+                    {/* Tabs: Feedback for everyone; Admin Fixes tab ONLY rendered for isAdmin */}
                     {isAdmin && (
-                        <div className="bg-gray-50 px-3 py-2 border-b border-gray-200 flex gap-2 text-xs font-semibold">
+                        <div className="px-3 py-1.5 bg-gray-100 border-b border-gray-200 grid grid-cols-2 gap-1.5 text-xs font-bold">
                             <button
-                                onClick={() => setAdminFilter('all')}
-                                className={`px-2.5 py-1 rounded-lg cursor-pointer ${adminFilter === 'all' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                                type="button"
+                                onClick={() => setActiveTab('feedback')}
+                                className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${activeTab === 'feedback' ? 'bg-blue-600 text-white shadow-xs' : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'}`}
                             >
-                                All ({feedbacks.length})
+                                <span>💬 Feedbacks</span>
                             </button>
                             <button
-                                onClick={() => setAdminFilter('pending')}
-                                className={`px-2.5 py-1 rounded-lg cursor-pointer ${adminFilter === 'pending' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
+                                type="button"
+                                onClick={() => setActiveTab('admin_fixes')}
+                                className={`py-1.5 px-2 rounded-lg transition-all cursor-pointer flex items-center justify-center gap-1 ${activeTab === 'admin_fixes' ? 'bg-amber-600 text-white shadow-xs' : 'bg-white text-gray-700 border border-gray-200 hover:bg-gray-50'}`}
                             >
-                                Pending
-                            </button>
-                            <button
-                                onClick={() => setAdminFilter('fixed')}
-                                className={`px-2.5 py-1 rounded-lg cursor-pointer ${adminFilter === 'fixed' ? 'bg-blue-600 text-white' : 'bg-gray-200 text-gray-700'}`}
-                            >
-                                Addressed
+                                <span>🛠️ Admin Fixes</span>
+                                <span className={`px-1.5 rounded-full text-[10px] ${activeTab === 'admin_fixes' ? 'bg-amber-700 text-white' : 'bg-amber-100 text-amber-800'}`}>
+                                    {remainingFixesCount}
+                                </span>
                             </button>
                         </div>
                     )}
 
-                    <div className="flex-1 p-4 overflow-y-auto space-y-3 bg-gray-50/50">
-                        {filteredFeedbacks.length === 0 ? (
-                            <div className="text-center py-12 text-gray-400 text-xs">
-                                {isAdmin ? 'No feedback received yet.' : 'No feedback sent yet. Send us your ideas or bug reports!'}
-                            </div>
-                        ) : (
-                            filteredFeedbacks.map((item) => {
-                                const isFixed = item.status === 'fixed' || item.status === 'addressed';
-                                return (
-                                    <div
-                                        key={item.id}
-                                        className={`p-3.5 rounded-xl border transition-all ${
-                                            isFixed
-                                                ? 'bg-emerald-50/70 border-emerald-200'
-                                                : 'bg-white border-gray-200 shadow-xs'
-                                        }`}
-                                    >
-                                        <div className="flex justify-between items-start gap-2 mb-1.5">
-                                            <span className="text-xs font-bold text-gray-900 flex items-center gap-1.5">
-                                                <span>@{item.username || 'user'}</span>
-                                                <span className="text-[10px] text-gray-400 font-normal">
-                                                    {item.createdAt?.toDate ? new Date(item.createdAt.toDate()).toLocaleDateString() : 'Just now'}
-                                                </span>
-                                            </span>
-                                            <span
-                                                className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider ${
-                                                    isFixed
-                                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
-                                                        : 'bg-amber-100 text-amber-800 border border-amber-300'
-                                                }`}
+                    {isAdmin && activeTab === 'admin_fixes' ? (
+                        <>
+                            {/* Admin Fix / Feature Composer */}
+                            <form onSubmit={handleSaveFix} className="p-3 bg-white border-b border-gray-200 space-y-2">
+                                <div className="flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={fixTitle}
+                                        onChange={(e) => setFixTitle(e.target.value)}
+                                        placeholder="Fix or feature to add (e.g. Fix timer pause bug)..."
+                                        className="flex-1 border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:ring-1 focus:ring-amber-500 outline-none"
+                                    />
+                                    <input
+                                        type="number"
+                                        min="1"
+                                        max={Math.max(1, orderedFixes.length + 1)}
+                                        value={fixPriorityPos}
+                                        onChange={(e) => setFixPriorityPos(e.target.value)}
+                                        title="Set order # (1 = first)"
+                                        placeholder="#"
+                                        className="w-12 border border-gray-300 rounded-lg px-1.5 py-1.5 text-xs font-bold text-center focus:ring-1 focus:ring-amber-500 outline-none"
+                                    />
+                                </div>
+                                <textarea
+                                    value={fixDetails}
+                                    onChange={(e) => setFixDetails(e.target.value)}
+                                    rows="2"
+                                    placeholder="Optional details or steps..."
+                                    className="w-full border border-gray-300 rounded-lg px-2.5 py-1.5 text-xs focus:ring-1 focus:ring-amber-500 outline-none resize-none"
+                                ></textarea>
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-2">
+                                        {editingFixId ? (
+                                            <button
+                                                type="button"
+                                                onClick={() => { setEditingFixId(null); setFixTitle(''); setFixDetails(''); setFixPriorityPos(''); }}
+                                                className="text-[11px] font-semibold text-gray-500 hover:text-gray-800 cursor-pointer"
                                             >
-                                                {isFixed ? '✓ Addressed / Fixed' : 'Pending'}
-                                            </span>
-                                        </div>
-
-                                        <p className="text-xs text-gray-800 leading-relaxed bg-white/80 p-2.5 rounded-lg border border-gray-100 mb-2">
-                                            {item.message}
-                                        </p>
-
-                                        {isAdmin ? (
-                                            <div className="mt-3 pt-2.5 border-t border-gray-200/60 space-y-2">
-                                                <div className="flex items-center justify-between gap-2">
-                                                    <div className="flex items-center gap-1.5 text-[11px]">
-                                                        <span className="font-bold text-gray-600">Priority:</span>
-                                                        <select
-                                                            value={item.priority || 'medium'}
-                                                            onChange={(e) => handleUpdatePriority(item.id, e.target.value)}
-                                                            className="border border-gray-300 rounded px-1.5 py-0.5 text-[11px] bg-white font-semibold outline-none"
-                                                        >
-                                                            <option value="low">Low</option>
-                                                            <option value="medium">Medium</option>
-                                                            <option value="high">High ⚡</option>
-                                                        </select>
-                                                    </div>
-
-                                                    <button
-                                                        type="button"
-                                                        onClick={() => handleUpdateStatus(item.id, isFixed ? 'pending' : 'fixed')}
-                                                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition-colors cursor-pointer ${
-                                                            isFixed
-                                                                ? 'bg-gray-200 hover:bg-gray-300 text-gray-700'
-                                                                : 'bg-emerald-600 hover:bg-emerald-700 text-white'
-                                                        }`}
-                                                    >
-                                                        {isFixed ? 'Reopen' : 'Mark Addressed / Fixed'}
-                                                    </button>
-                                                </div>
-
-                                                <div>
-                                                    <input
-                                                        type="text"
-                                                        defaultValue={item.adminNotes || ''}
-                                                        onBlur={(e) => handleSaveAdminNotes(item.id, e.target.value)}
-                                                        placeholder="Admin internal to-do notes..."
-                                                        className="w-full bg-amber-50/60 border border-amber-200 rounded px-2 py-1 text-[11px] text-amber-900 placeholder-amber-400 outline-none focus:ring-1 focus:ring-amber-400"
-                                                    />
-                                                </div>
-                                            </div>
+                                                Cancel
+                                            </button>
                                         ) : (
-                                            isFixed && (
-                                                <div className="mt-2 text-[11px] font-semibold text-emerald-700 bg-emerald-100/80 p-2 rounded-lg border border-emerald-200 flex items-center gap-1.5">
-                                                    <span>🎉</span>
-                                                    <span>Great news! The admin has addressed and fixed this item. Thank you!</span>
-                                                </div>
-                                            )
+                                            <span className="text-[10px] text-gray-400">Tip: Put #1 to work on it first</span>
                                         )}
                                     </div>
-                                );
-                            })
-                        )}
-                    </div>
+                                    <button
+                                        type="submit"
+                                        disabled={!fixTitle.trim()}
+                                        className="px-3 py-1 bg-amber-600 hover:bg-amber-700 disabled:bg-gray-300 text-white font-bold text-xs rounded-lg cursor-pointer"
+                                    >
+                                        {editingFixId ? 'Update Item' : '+ Add to Queue'}
+                                    </button>
+                                </div>
+                            </form>
 
-                    {!isAdmin && (
-                        <form onSubmit={handleSendFeedback} className="p-3 bg-white border-t border-gray-200 flex gap-2">
-                            <input
-                                type="text"
-                                value={newMessage}
-                                onChange={(e) => setNewMessage(e.target.value)}
-                                placeholder="What to improve or add..."
-                                className="flex-1 border border-gray-300 rounded-xl px-3 py-2 text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                            />
-                            <button
-                                type="submit"
-                                disabled={isSubmitting || !newMessage.trim()}
-                                className={`px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl transition-colors cursor-pointer shrink-0 ${
-                                    isSubmitting || !newMessage.trim() ? 'opacity-50 cursor-not-allowed' : ''
-                                }`}
-                            >
-                                Send
-                            </button>
-                        </form>
+                            {/* Filter bar for completed items */}
+                            <div className="px-3 py-1.5 bg-amber-50/70 border-b border-amber-100 flex items-center justify-between text-[11px]">
+                                <span className="font-semibold text-amber-900">
+                                    {remainingFixesCount} left to work on
+                                </span>
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCompletedFixes(!showCompletedFixes)}
+                                    className="font-bold text-amber-700 hover:text-amber-900 underline cursor-pointer"
+                                >
+                                    {showCompletedFixes ? 'Hide Completed' : 'Show Completed'}
+                                </button>
+                            </div>
+
+                            {/* Ordered Fixes List */}
+                            <div className="flex-1 p-3 overflow-y-auto space-y-2 bg-gray-50/50">
+                                {visibleFixes.length === 0 ? (
+                                    <div className="text-center py-8 text-gray-400 text-xs">
+                                        No items in your fix queue. Add something above whenever an idea comes up!
+                                    </div>
+                                ) : (
+                                    visibleFixes.map((fix, idx) => {
+                                        const rankNumber = idx + 1;
+                                        return (
+                                            <div
+                                                key={fix.id}
+                                                className={`p-2.5 rounded-lg border text-xs space-y-1.5 transition-all ${
+                                                    fix.completed
+                                                        ? 'bg-emerald-50/80 border-emerald-200 opacity-80'
+                                                        : rankNumber === 1
+                                                            ? 'bg-amber-50/60 border-amber-300 shadow-2xs'
+                                                            : 'bg-white border-gray-200 shadow-2xs'
+                                                }`}
+                                            >
+                                                <div className="flex items-start justify-between gap-2">
+                                                    <label className="flex items-start gap-2 cursor-pointer flex-1">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={Boolean(fix.completed)}
+                                                            onChange={() => handleToggleFixCompleted(fix.id)}
+                                                            className="mt-0.5 w-3.5 h-3.5 text-emerald-600 rounded border-gray-300 cursor-pointer shrink-0"
+                                                        />
+                                                        <span className={`font-bold leading-snug ${fix.completed ? 'line-through text-gray-500' : 'text-gray-900'}`}>
+                                                            <span className={`mr-1.5 px-1.5 py-0.5 rounded text-[10px] font-black ${
+                                                                fix.completed
+                                                                    ? 'bg-emerald-100 text-emerald-700'
+                                                                    : rankNumber === 1
+                                                                        ? 'bg-amber-600 text-white'
+                                                                        : 'bg-gray-100 text-gray-700'
+                                                            }`}>
+                                                                #{rankNumber}
+                                                            </span>
+                                                            {fix.title}
+                                                        </span>
+                                                    </label>
+
+                                                    <div className="flex items-center gap-1 shrink-0">
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleStartEditFix(fix, idx)}
+                                                            className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 px-1 cursor-pointer"
+                                                        >
+                                                            Edit
+                                                        </button>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteFix(fix.id)}
+                                                            className="text-[11px] font-semibold text-red-500 hover:text-red-700 px-1 cursor-pointer"
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    </div>
+                                                </div>
+
+                                                {fix.details && (
+                                                    <p className={`pl-5 text-[11px] whitespace-pre-wrap leading-relaxed ${fix.completed ? 'line-through text-gray-400' : 'text-gray-600'}`}>
+                                                        {fix.details}
+                                                    </p>
+                                                )}
+
+                                                {/* Order / Priority Controls */}
+                                                {!fix.completed && (
+                                                    <div className="pl-5 pt-1 flex items-center justify-between gap-2 text-[10px]">
+                                                        {rankNumber > 1 ? (
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleMakeFirst(fix.id)}
+                                                                className="px-2 py-0.5 rounded bg-amber-100 hover:bg-amber-200 text-amber-900 font-bold cursor-pointer"
+                                                            >
+                                                                Set as #1 (First)
+                                                            </button>
+                                                        ) : (
+                                                            <span className="text-amber-700 font-bold">★ Working on next</span>
+                                                        )}
+
+                                                        <div className="flex items-center gap-1 text-gray-500">
+                                                            <span>Order:</span>
+                                                            <select
+                                                                value={rankNumber}
+                                                                onChange={(e) => handleChangeRank(fix.id, Number(e.target.value))}
+                                                                className="border border-gray-300 rounded px-1 py-0.5 bg-white text-gray-800 font-bold cursor-pointer"
+                                                            >
+                                                                {orderedFixes.map((_, rIdx) => (
+                                                                    <option key={rIdx + 1} value={rIdx + 1}>
+                                                                        #{rIdx + 1}
+                                                                    </option>
+                                                                ))}
+                                                            </select>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        </>
+                    ) : (
+                        <>
+                            {isAdmin && (
+                                <div className="px-3 py-2 bg-gray-100 border-b border-gray-200 flex gap-1.5 text-[11px] font-bold flex-wrap">
+                                    <button
+                                        type="button"
+                                        onClick={() => setAdminViewMode('others')}
+                                        className={`px-2 py-1 rounded cursor-pointer ${adminViewMode === 'others' ? 'bg-indigo-600 text-white' : 'bg-white text-gray-700 border'}`}
+                                    >
+                                        Others' Feedback ({feedbacks.filter(f => !f.archived && f.userId !== currentUser?.uid).length})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setAdminViewMode('active')}
+                                        className={`px-2 py-1 rounded cursor-pointer ${adminViewMode === 'active' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 border'}`}
+                                    >
+                                        All Active ({feedbacks.filter(f => !f.archived).length})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setAdminViewMode('log')}
+                                        className={`px-2 py-1 rounded cursor-pointer ${adminViewMode === 'log' ? 'bg-blue-600 text-white' : 'bg-white text-gray-700 border'}`}
+                                    >
+                                        Log ({feedbacks.filter(f => f.archived).length})
+                                    </button>
+                                </div>
+                            )}
+
+                            <div className="flex-1 p-3 overflow-y-auto space-y-2.5 bg-gray-50/50">
+                                {displayedFeedbacks.length === 0 ? (
+                                    <div className="text-center py-10 text-gray-400 text-xs">
+                                        {isAdmin
+                                            ? (adminViewMode === 'others' ? 'No feedback from other users yet.' : (adminViewMode === 'active' ? 'No active feedback in the box.' : 'Feedback log is empty.'))
+                                            : 'No feedback messages yet.'}
+                                    </div>
+                                ) : (
+                                    displayedFeedbacks.map((item) => {
+                                        const isFixed = item.status === 'fixed' || item.status === 'addressed';
+                                        return (
+                                            <div
+                                                key={item.id}
+                                                className={`p-3 rounded-lg border text-xs space-y-2 ${isFixed ? 'bg-emerald-50 border-emerald-200' : 'bg-white border-gray-200'}`}
+                                            >
+                                                <div className="flex justify-between items-center">
+                                                    <span className="font-bold text-gray-800">@{item.username || 'user'}</span>
+                                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${isFixed ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'}`}>
+                                                        {isFixed ? 'Addressed' : 'Pending'}
+                                                    </span>
+                                                </div>
+                                                <p className="text-gray-700 bg-white p-2 rounded border border-gray-100">
+                                                    {item.message}
+                                                </p>
+
+                                                {isAdmin && (
+                                                    <div className="pt-2 border-t flex items-center justify-between gap-1 flex-wrap">
+                                                        <div className="flex items-center gap-1.5">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => handleUpdateStatus(item.id, isFixed ? 'pending' : 'fixed')}
+                                                                className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${isFixed ? 'bg-gray-200 text-gray-700' : 'bg-emerald-600 text-white'}`}
+                                                            >
+                                                                {isFixed ? 'Reopen' : 'Mark Addressed'}
+                                                            </button>
+
+                                                            {isFixed && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleArchiveFeedback(item.id, !item.archived)}
+                                                                    className={`px-2.5 py-1 rounded text-[11px] font-bold cursor-pointer ${item.archived ? 'bg-amber-600 text-white' : 'bg-gray-800 text-white'}`}
+                                                                >
+                                                                    {item.archived ? 'Restore' : 'Archive ➔'}
+                                                                </button>
+                                                            )}
+                                                        </div>
+
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleDeleteFeedback(item.id)}
+                                                            className="px-2.5 py-1 rounded text-[11px] font-bold bg-red-100 text-red-700 hover:bg-red-200 transition-colors cursor-pointer"
+                                                            title="Permanently Delete"
+                                                        >
+                                                            🗑️ Delete
+                                                        </button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })
+                                )}
+                            </div>
+
+                            {!isAdmin && (
+                                <form onSubmit={handleSendFeedback} className="p-3 bg-white border-t border-gray-200 flex gap-2">
+                                    <input
+                                        type="text"
+                                        value={newMessage}
+                                        onChange={(e) => setNewMessage(e.target.value)}
+                                        placeholder="Send feedback or bug report..."
+                                        className="flex-1 border border-gray-300 rounded-lg px-3 py-1.5 text-xs focus:ring-1 focus:ring-blue-500 outline-none"
+                                    />
+                                    <button
+                                        type="submit"
+                                        disabled={isSubmitting || !newMessage.trim()}
+                                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg cursor-pointer"
+                                    >
+                                        Send
+                                    </button>
+                                </form>
+                            )}
+                        </>
                     )}
                 </div>
             )}
@@ -961,7 +1530,7 @@ const ChooseUsernameModal = ({ user, onComplete }) => {
             <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full">
                 <div className="text-center mb-4">
                     <div className="w-12 h-12 mx-auto mb-2 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xl">
-                        
+
                     </div>
                     <h3 className="text-lg font-bold text-gray-900">Choose Your Username</h3>
                     <p className="text-xs text-gray-500 mt-1">
@@ -1123,6 +1692,7 @@ function App() {
 
     const [showResetModal, setShowResetModal] = useState(false);
     const [showExitConfirmModal, setShowExitConfirmModal] = useState(false);
+    const [showSubmitConfirmModal, setShowSubmitConfirmModal] = useState(false);
     const [showExportModal, setShowExportModal] = useState(false);
     const [exportSelectedIds, setExportSelectedIds] = useState(new Set());
     const [copySuccess, setCopySuccess] = useState(false);
@@ -1133,11 +1703,13 @@ function App() {
         (currentUser && (currentUser.uid === ADMIN_UID || (currentUser.email && currentUser.email.toLowerCase() === ADMIN_EMAIL.toLowerCase())))
     );
 
-    // Auth State Observer
+    // Auth State Observer (fast startup + parallel history load)
     useEffect(() => {
         const unsubscribe = auth.onAuthStateChanged(async (user) => {
             if (user) {
                 setCurrentUser(user);
+                setAuthLoading(false);
+                loadUserHistory(user.uid);
                 try {
                     const userDoc = await db.collection('users').doc(user.uid).get();
                     if (userDoc.exists) {
@@ -1149,14 +1721,13 @@ function App() {
                 } catch (err) {
                     console.error("Error fetching user profile:", err);
                 }
-                loadUserHistory(user.uid);
             } else {
                 setCurrentUser(null);
                 setUserProfile(null);
                 setHighScores({});
                 setExamHistory({});
+                setAuthLoading(false);
             }
-            setAuthLoading(false);
         });
         return () => unsubscribe();
     }, []);
@@ -1234,13 +1805,61 @@ function App() {
         }
     };
 
-    // Load Exams from Firestore (/exams and /userExams)
-    const loadExams = async () => {
-        setLoadingExams(true);
+    // Load Exams from Firestore (/exams and /userExams) with session cache
+    const loadExams = async (forceRefresh = false) => {
+        const cacheKey = currentUser ? `cached_exams_${currentUser.uid}` : null;
+        if (!forceRefresh && cacheKey) {
+            try {
+                const cachedRaw = sessionStorage.getItem(cacheKey);
+                if (cachedRaw) {
+                    const parsed = JSON.parse(cachedRaw);
+                    if (Array.isArray(parsed) && parsed.length > 0) {
+                        setExams(parsed);
+                        setLoadingExams(false);
+                    }
+                }
+            } catch (e) { /* ignore cache parse errors */ }
+        }
+
+        if (exams.length === 0) setLoadingExams(true);
         setFetchError(null);
         try {
-            // 1. Fetch Universal Exams from /exams
-            const universalSnap = await db.collection('exams').get();
+            const universalPromise = db.collection('exams').get();
+
+            let userExamsPromise;
+            if (isAdmin) {
+                userExamsPromise = db.collection('userExams').get().then(snap =>
+                    snap.docs.map(doc => ({
+                        id: doc.id,
+                        ...doc.data(),
+                        collectionSource: 'userExams',
+                        isUniversal: false
+                    }))
+                );
+            } else if (currentUser) {
+                userExamsPromise = Promise.all([
+                    db.collection('userExams').where('ownerId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
+                    db.collection('userExams').where('visibility', '==', 'public').get().catch(() => ({ docs: [] })),
+                    db.collection('userExams').where('sharedWith', 'array-contains', currentUser.uid).get().catch(() => ({ docs: [] }))
+                ]).then(([mySnap, publicSnap, sharedSnap]) => {
+                    const mapById = new Map();
+                    [...mySnap.docs, ...publicSnap.docs, ...sharedSnap.docs].forEach(doc => {
+                        if (!mapById.has(doc.id)) {
+                            mapById.set(doc.id, {
+                                id: doc.id,
+                                ...doc.data(),
+                                collectionSource: 'userExams',
+                                isUniversal: false
+                            });
+                        }
+                    });
+                    return Array.from(mapById.values());
+                });
+            } else {
+                userExamsPromise = Promise.resolve([]);
+            }
+
+            const [universalSnap, userExams] = await Promise.all([universalPromise, userExamsPromise]);
             const universalExams = universalSnap.docs.map(doc => ({
                 id: doc.id,
                 ...doc.data(),
@@ -1249,38 +1868,13 @@ function App() {
                 visibility: 'universal'
             }));
 
-            // 2. Fetch User-created Exams from /userExams
-            let userExams = [];
-            if (isAdmin) {
-                const userExamsSnap = await db.collection('userExams').get();
-                userExams = userExamsSnap.docs.map(doc => ({
-                    id: doc.id,
-                    ...doc.data(),
-                    collectionSource: 'userExams',
-                    isUniversal: false
-                }));
-            } else if (currentUser) {
-                const [mySnap, publicSnap, sharedSnap] = await Promise.all([
-                    db.collection('userExams').where('ownerId', '==', currentUser.uid).get().catch(() => ({ docs: [] })),
-                    db.collection('userExams').where('visibility', '==', 'public').get().catch(() => ({ docs: [] })),
-                    db.collection('userExams').where('sharedWith', 'array-contains', currentUser.uid).get().catch(() => ({ docs: [] }))
-                ]);
-
-                const mapById = new Map();
-                [...mySnap.docs, ...publicSnap.docs, ...sharedSnap.docs].forEach(doc => {
-                    if (!mapById.has(doc.id)) {
-                        mapById.set(doc.id, {
-                            id: doc.id,
-                            ...doc.data(),
-                            collectionSource: 'userExams',
-                            isUniversal: false
-                        });
-                    }
-                });
-                userExams = Array.from(mapById.values());
+            const combined = [...universalExams, ...userExams];
+            setExams(combined);
+            if (cacheKey) {
+                try {
+                    sessionStorage.setItem(cacheKey, JSON.stringify(combined));
+                } catch (e) { /* ignore quota errors */ }
             }
-
-            setExams([...universalExams, ...userExams]);
         } catch (err) {
             console.error("Error fetching exams: ", err);
             setFetchError(err.message);
@@ -1293,7 +1887,7 @@ function App() {
         if (currentUser) {
             loadExams();
         }
-    }, [currentUser, userProfile]);
+    }, [currentUser?.uid, isAdmin]);
 
     // Load all registered users for Admin Console
     const loadAllUsers = async () => {
@@ -1722,30 +2316,30 @@ function App() {
     };
 
     const handleSelectExam = (exam) => {
-    let shuffledQuestions = [...(exam.questions || [])];
-    const shouldShuffle = exam.shuffleQuestions !== false;
-    if (shouldShuffle) {
-        if (exam.type === 'UAT') {
-            const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
-            const mathPart = shuffleArray(shuffledQuestions.slice(55));
-            shuffledQuestions = [...englishPart, ...mathPart];
-        } else {
-            shuffledQuestions = shuffleArray(shuffledQuestions);
+        let shuffledQuestions = [...(exam.questions || [])];
+        const shouldShuffle = exam.shuffleQuestions !== false;
+        if (shouldShuffle) {
+            if (exam.type === 'UAT') {
+                const englishPart = shuffleArray(shuffledQuestions.slice(0, 55));
+                const mathPart = shuffleArray(shuffledQuestions.slice(55));
+                shuffledQuestions = [...englishPart, ...mathPart];
+            } else {
+                shuffledQuestions = shuffleArray(shuffledQuestions);
+            }
         }
-    }
 
-    shuffledQuestions = shuffledQuestions.map(q => {
-        if (q.type === 'matching' && q.pairs && q.pairs.length > 0) {
-            const rights = q.pairs.map(p => p.right);
-            return {
-                ...q,
-                shuffledRights: shuffleArray(rights)
-            };
-        }
-        return q;
-    });
+        shuffledQuestions = shuffledQuestions.map(q => {
+            if (q.type === 'matching' && q.pairs && q.pairs.length > 0) {
+                const rights = q.pairs.map(p => p.right);
+                return {
+                    ...q,
+                    shuffledRights: shuffleArray(rights)
+                };
+            }
+            return q;
+        });
 
-    setActiveExam({ ...exam, questions: shuffledQuestions });
+        setActiveExam({ ...exam, questions: shuffledQuestions });
         setManualOverrides({});
         if (exam.type === 'UAT') {
             setUatSection('english');
@@ -1798,97 +2392,82 @@ function App() {
         setTimerStatus('running');
     };
 
-    const isOriginallyCorrect = (q) => {
-        const userAns = answers[q.id];
-        if (userAns === undefined || userAns === null || userAns === '') return false;
+    const getMatchingMatchedCount = (q, userAns) => {
+        if (!q.pairs || !userAns || typeof userAns !== 'object') return 0;
+        let count = 0;
+        q.pairs.forEach(p => {
+            if (userAns[p.id] !== undefined && String(userAns[p.id]).trim() === String(p.right).trim()) {
+                count++;
+            }
+        });
+        return count;
+    };
+
+    const getQuestionMaxScore = (q) => {
+        if (q.type === 'matching' && q.pairs && q.pairs.length > 0) {
+            return q.pairs.length;
+        }
+        return 1;
+    };
+
+    const getQuestionEarnedScore = (q, userAns, overrides) => {
+        if (overrides && overrides[q.id] !== undefined) {
+            return overrides[q.id] ? getQuestionMaxScore(q) : 0;
+        }
+        if (userAns === undefined || userAns === null || userAns === '') return 0;
 
         if (q.type === 'fill_blank' || q.type === 'short_answer') {
             const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
-            return correctOpts.includes(String(userAns).trim().toLowerCase());
+            return correctOpts.includes(String(userAns).trim().toLowerCase()) ? 1 : 0;
         } else if (q.type === 'matching') {
-        let allCorrect = true;
-        const rights = q.shuffledRights || q.pairs.map(p => p.right);
-        if (typeof userAns === 'object' && userAns !== null) {
-            q.pairs.forEach(p => {
-                const correctIndex = rights.indexOf(p.right);
-                const correctLetter = String.fromCharCode(65 + correctIndex);
-                const userLetter = userAns[p.id] ? String(userAns[p.id]).trim().toUpperCase() : '';
-                if (userLetter !== correctLetter) allCorrect = false;
-            });
+            return getMatchingMatchedCount(q, userAns);
         } else {
-            allCorrect = false;
+            return String(userAns).trim() === String(q.correctAnswer).trim() ? 1 : 0;
         }
-        return allCorrect;
-    } else {
-            return String(userAns).trim() === String(q.correctAnswer).trim();
-        }
+    };
+
+    const isOriginallyCorrect = (q) => {
+        const earned = getQuestionEarnedScore(q, answers[q.id], {});
+        return earned === getQuestionMaxScore(q);
     };
 
     const isQuestionCorrect = (q) => {
-        if (manualOverrides[q.id] !== undefined) {
-            return manualOverrides[q.id];
-        }
-        const userAns = answers[q.id];
-        if (userAns === undefined || userAns === null || userAns === '') return false;
-
-        if (q.type === 'fill_blank' || q.type === 'short_answer') {
-            const correctOpts = String(q.correctAnswer).split('|').map(s => s.trim().toLowerCase());
-            return correctOpts.includes(String(userAns).trim().toLowerCase());
-        } else if (q.type === 'matching') {
-            let allCorrect = true;
-            if (typeof userAns === 'object' && userAns !== null) {
-                q.pairs.forEach(p => {
-                    if (!userAns[p.id] || String(userAns[p.id]).trim() !== String(p.right).trim()) allCorrect = false;
-                });
-            } else {
-                allCorrect = false;
-            }
-            return allCorrect;
-        } else {
-            return String(userAns).trim() === String(q.correctAnswer).trim();
-        }
+        const earned = getQuestionEarnedScore(q, answers[q.id], manualOverrides);
+        return earned === getQuestionMaxScore(q);
     };
 
     const calculateCurrentScore = () => {
-        let scoreCount = 0;
+        if (!activeExam || !activeExam.questions) return 0;
+        let totalScore = 0;
         activeExam.questions.forEach(q => {
-            if (isQuestionCorrect(q)) scoreCount++;
+            totalScore += getQuestionEarnedScore(q, answers[q.id], manualOverrides);
         });
-        return scoreCount;
+        return totalScore;
     };
 
-    const finalizeAndShowResults = async (overrideScore) => {
+    const getTotalPossibleScore = (exam) => {
+        if (!exam || !exam.questions) return 0;
+        let total = 0;
+        exam.questions.forEach(q => {
+            total += getQuestionMaxScore(q);
+        });
+        return total;
+    };
+
+    const finalizeAndShowResults = (overrideScore, callback) => {
         const currentScore = overrideScore !== undefined ? overrideScore : calculateCurrentScore();
         setScore(currentScore);
 
-        const totalQ = activeExam.questions.length || 1;
+        const totalQ = Math.max(1, getTotalPossibleScore(activeExam));
         const scorePct = Math.round((currentScore / totalQ) * 100);
 
         const submissionTimestamp = new Date().toISOString();
+        const tempDocId = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
         setSubmissionDate(submissionTimestamp);
-
-        let newDocId = null;
-        if (currentUser) {
-            try {
-                const attemptData = {
-                    examId: activeExam.id,
-                    examTitle: activeExam.title || 'Exam',
-                    collectionSource: activeExam.collectionSource || 'exams',
-                    score: currentScore,
-                    total: totalQ,
-                    scorePct: scorePct,
-                    date: submissionTimestamp
-                };
-                const docRef = await db.collection('userHistory').doc(currentUser.uid).collection('attempts').add(attemptData);
-                newDocId = docRef.id;
-                setLastSubmissionDocId(newDocId);
-            } catch (err) {
-                console.error("Error saving attempt to Firestore:", err);
-            }
-        }
+        setLastSubmissionDocId(tempDocId);
 
         const newRecord = {
-            id: newDocId || submissionTimestamp,
+            id: tempDocId,
             score: currentScore,
             total: totalQ,
             scorePct: scorePct,
@@ -1909,13 +2488,57 @@ function App() {
         });
 
         localStorage.removeItem('exam_in_progress');
-        setCurrentView('results');
-        setTimerStatus('finished');
+
+        if (currentUser) {
+            const attemptData = {
+                examId: activeExam.id,
+                examTitle: activeExam.title || 'Exam',
+                collectionSource: activeExam.collectionSource || 'exams',
+                score: currentScore,
+                total: totalQ,
+                scorePct: scorePct,
+                date: submissionTimestamp
+            };
+            db.collection('userHistory').doc(currentUser.uid).collection('attempts').doc(tempDocId).set(attemptData)
+                .catch(err => console.error("Error saving attempt to Firestore:", err));
+        }
+
+        if (callback) {
+            callback();
+        } else {
+            setCurrentView('results');
+            setTimerStatus('finished');
+        }
     };
 
-    const handleSubmit = () => {
+    const isQuestionAnswered = (q) => {
+        const ans = answers[q.id];
+        if (ans === undefined || ans === null) return false;
+        if (typeof ans === 'string') return ans.trim().length > 0;
+        if (typeof ans === 'object') return Object.keys(ans).length > 0;
+        return Boolean(ans);
+    };
+
+    const getUnansweredCount = () => {
+        if (!activeExam?.questions) return 0;
+        return activeExam.questions.filter(q => !isQuestionAnswered(q)).length;
+    };
+
+    const handleSubmitRequest = () => {
+        if (getUnansweredCount() > 0 && timeLeft > 0) {
+            setShowSubmitConfirmModal(true);
+            return;
+        }
+        if (activeExam.type === 'UAT' && uatSection === 'english') {
+            handleStartMath();
+        } else {
+            handleSubmit();
+        }
+    };
+
+    const handleSubmit = (callback) => {
         const finalScore = calculateCurrentScore();
-        finalizeAndShowResults(finalScore);
+        finalizeAndShowResults(finalScore, callback);
     };
 
     const handleToggleOverride = async (qId, status) => {
@@ -1933,7 +2556,7 @@ function App() {
         setScore(newScore);
 
         if (submissionDate && activeExam) {
-            const totalQ = activeExam.questions.length || 1;
+            const totalQ = getTotalPossibleScore(activeExam);
             const newScorePct = Math.round((newScore / totalQ) * 100);
 
             setExamHistory(prev => {
@@ -2096,6 +2719,7 @@ function App() {
 
         localStorage.removeItem('exam_in_progress');
         setCurrentView('dashboard');
+        window.scrollTo({ top: 0, behavior: 'smooth' });
     };
 
     const handleBackToDashboardClick = () => {
@@ -2107,9 +2731,10 @@ function App() {
     };
 
     const handleConfirmExitAndSubmit = () => {
-        handleSubmit();
         setShowExitConfirmModal(false);
-        exitToDashboard();
+        handleSubmit(() => {
+            exitToDashboard();
+        });
     };
 
     const openExportModal = () => {
@@ -2993,7 +3618,7 @@ function App() {
                             <div className="bg-white rounded-2xl shadow-2xl flex flex-col max-w-lg w-full max-h-[90vh] overflow-hidden">
                                 <div className="p-5 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                                     <div className="flex items-center gap-2">
-                                        
+
                                         <div>
                                             <h3 className="text-lg font-bold text-gray-900">Share Exam</h3>
                                             <p className="text-xs text-gray-500 truncate max-w-xs">{sharingExam.title}</p>
@@ -3682,7 +4307,7 @@ function App() {
                         </div>
                     )}
                 </div>
-                <FeedbackWidget currentUser={currentUser} userProfile={userProfile} isAdmin={isAdmin} />
+                <FeedbackAndAdminFixesWidget currentUser={currentUser} userProfile={userProfile} isAdmin={isAdmin} activeExamTitle={activeExam?.title} />
             </div>
         );
     }
@@ -3737,7 +4362,8 @@ function App() {
         isNextDisabled = currentIndex === activeExam.questions.length - 1;
     }
 
-    const finalScorePct = activeExam?.questions?.length ? Math.round((score / activeExam.questions.length) * 100) : 0;
+    const totalPossible = activeExam?.questions ? getTotalPossibleScore(activeExam) : 1;
+    const finalScorePct = activeExam?.questions?.length ? Math.round((score / totalPossible) * 100) : 0;
     const scoreColorClass = finalScorePct === 100 ? "text-yellow-500" : finalScorePct >= 95 ? "text-emerald-600" : finalScorePct >= 90 ? "text-amber-500" : "text-rose-600";
     const displayScoreText = finalScorePct === 100 ? (
         <span><span className="animate-crown">👑</span> 100%</span>
@@ -3758,6 +4384,43 @@ function App() {
                         <div className="flex justify-end gap-3">
                             <button onClick={() => setShowResetModal(false)} className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-md font-medium">Cancel</button>
                             <button onClick={handleReset} className="px-4 py-2 text-white bg-blue-600 hover:bg-blue-700 rounded-md font-medium">Yes, Retake</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showSubmitConfirmModal && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 transition-opacity p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full">
+                        <div className="w-12 h-12 mx-auto mb-3 rounded-xl bg-green-100 text-green-600 flex items-center justify-center font-bold text-xl">
+                            ✓
+                        </div>
+                        <h3 className="text-lg font-bold text-gray-900 text-center mb-1">Unanswered Questions Remaining</h3>
+                        <p className="text-xs text-gray-600 text-center mb-6 leading-relaxed">
+                            You still have <strong className="text-gray-900">{getUnansweredCount()}</strong> unanswered {getUnansweredCount() === 1 ? 'question' : 'questions'}. Submit anyway?
+                        </p>
+                        <div className="flex justify-end gap-3">
+                            <button
+                                type="button"
+                                onClick={() => setShowSubmitConfirmModal(false)}
+                                className="px-4 py-2 text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl text-xs font-bold cursor-pointer"
+                            >
+                                Continue Exam
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowSubmitConfirmModal(false);
+                                    if (activeExam.type === 'UAT' && uatSection === 'english') {
+                                        handleStartMath();
+                                    } else {
+                                        handleSubmit();
+                                    }
+                                }}
+                                className="px-4 py-2 text-white bg-green-600 hover:bg-green-700 rounded-xl text-xs font-bold shadow transition-colors cursor-pointer"
+                            >
+                                Yes, Submit Now
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -3922,11 +4585,11 @@ function App() {
                                 )}
 
                                 {activeExam.type === 'UAT' && uatSection === 'english' ? (
-                                    <button type="button" onClick={handleStartMath} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
+                                    <button type="button" onClick={handleSubmitRequest} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
                                         Submit English & Start Math
                                     </button>
                                 ) : (
-                                    <button type="button" onClick={handleSubmit} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
+                                    <button type="button" onClick={handleSubmitRequest} className="w-full px-4 py-3 bg-green-600 text-white font-medium rounded-lg hover:bg-green-700 transition-colors shadow-sm cursor-pointer">
                                         Submit Exam
                                     </button>
                                 )}
@@ -4079,66 +4742,12 @@ function App() {
                                     )}
 
                                     {question.type === 'matching' && question.pairs && (
-                                        <div className="space-y-4 bg-gray-50 p-4 rounded-lg border border-gray-200">
-                                            <p className="text-xs font-bold text-gray-700 uppercase tracking-wide">Match Items: Type the corresponding letter (A, B, C...) in the box.</p>
-                                            <div className="bg-white p-3 rounded border border-blue-100 text-xs space-y-1">
-                                                <p className="font-bold text-blue-900 mb-1">Available Options:</p>
-                                                {(question.shuffledRights || question.pairs.map(p => p.right)).map((rightText, oIdx) => {
-                                                    const optLetter = String.fromCharCode(65 + oIdx);
-                                                    return (
-                                                        <div key={oIdx} className="text-gray-800">
-                                                            <strong className="text-blue-700">{optLetter})</strong> <MathText text={rightText} />
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                            <div className="space-y-2">
-                                                {question.pairs.map((pair) => {
-                                                    const userPairAnswers = answers[question.id] || {};
-                                                    const typedVal = userPairAnswers[pair.id] || '';
-                                                    const maxLetter = String.fromCharCode(64 + question.pairs.length);
-
-                                                    return (
-                                                        <div key={pair.id} className="flex items-center justify-between gap-3 bg-white p-3 border rounded-md shadow-sm">
-                                                            <span className="text-sm font-medium text-gray-800 flex-1">
-                                                                <strong className="mr-2">{pair.id}.</strong> <MathText text={pair.left} />
-                                                            </span>
-                                                            <div className="flex items-center gap-2">
-                                                                <span className="text-xs font-semibold text-gray-500">Choice:</span>
-                                                                <input
-                                                                    type="text"
-                                                                    maxLength="1"
-                                                                    disabled={isSubmitted}
-                                                                    value={typedVal}
-                                                                    onChange={(e) => {
-                                                                        const char = e.target.value.toUpperCase();
-                                                                        if (char === "") {
-                                                                            const updated = { ...userPairAnswers };
-                                                                            delete updated[pair.id];
-                                                                            setAnswers({ ...answers, [question.id]: updated });
-                                                                            return;
-                                                                        }
-                                                                        if (char >= 'A' && char <= maxLetter) {
-                                                                            const alreadyUsed = Object.entries(userPairAnswers).some(
-                                                                                ([pId, val]) => pId !== String(pair.id) && val === char
-                                                                            );
-                                                                            if (alreadyUsed) {
-                                                                                alert(`Letter ${char} is already assigned to another matching pair.`);
-                                                                                return;
-                                                                            }
-                                                                            const updated = { ...userPairAnswers, [pair.id]: char };
-                                                                            setAnswers({ ...answers, [question.id]: updated });
-                                                                        }
-                                                                    }}
-                                                                    placeholder="?"
-                                                                    className="w-12 h-10 text-center font-bold text-base border-2 border-gray-300 focus:border-blue-500 rounded outline-none bg-white uppercase shadow-sm"
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
+                                        <MatchingQuestionWidget
+                                            question={question}
+                                            answer={answers[question.id]}
+                                            onAnswerChange={(newAns) => setAnswers({ ...answers, [question.id]: newAns })}
+                                            isSubmitted={isSubmitted}
+                                        />
                                     )}
 
                                     {!isSubmitted && answers[question.id] && (
@@ -4176,8 +4785,8 @@ function App() {
                                         const userAns = answers[question.id];
                                         const hasAnswered = userAns !== undefined && userAns !== null && userAns !== '' && (typeof userAns !== 'object' || Object.keys(userAns).length > 0);
                                         const isIncorrect = hasAnswered && !isOriginallyCorrect(question);
-                                        const containerBgClass = isQuestionCorrect(question) 
-                                            ? "bg-emerald-50/60 border-emerald-200" 
+                                        const containerBgClass = isQuestionCorrect(question)
+                                            ? "bg-emerald-50/60 border-emerald-200"
                                             : "bg-rose-50/60 border-rose-200";
 
                                         return (
@@ -4269,7 +4878,7 @@ function App() {
                     </main>
                 </div>
             </div>
-            <FeedbackWidget currentUser={currentUser} userProfile={userProfile} isAdmin={isAdmin} />
+            <FeedbackAndAdminFixesWidget currentUser={currentUser} userProfile={userProfile} isAdmin={isAdmin} activeExamTitle={activeExam?.title} />
         </div>
     );
 }
