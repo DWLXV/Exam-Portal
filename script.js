@@ -1,4 +1,4 @@
-﻿const { useState, useEffect, useRef } = React;
+const { useState, useEffect, useRef } = React;
 
 const firebaseConfig = {
     apiKey: "AIzaSyABJmXZHH3LVRb7UN_NF9lZd7k05v7rs68",
@@ -1212,19 +1212,28 @@ const FeedbackAndAdminFixesWidget = ({ currentUser, userProfile, isAdmin, active
 };
 
 
+const isValidEmailFormat = (val) => {
+    const trimmed = (val || '').trim();
+    const match = trimmed.match(/^[^\s@]+@([^\s@.]+\.)+[a-zA-Z]{2,}$/);
+    if (!match) return false;
+    const domain = trimmed.split('@')[1].toLowerCase();
+    const blockedDomains = ['example.com', 'example.org', 'example.net', 'test.com', 'localhost', 'invalid.com'];
+    return !blockedDomains.includes(domain);
+};
+
 const AuthScreen = ({ onAuthSuccess }) => {
     const [authMode, setAuthMode] = useState('signin');
     const [email, setEmail] = useState('');
     const [password, setPassword] = useState('');
-    const [displayName, setDisplayName] = useState('');
-    const [username, setUsername] = useState('');
     const [showPassword, setShowPassword] = useState(false);
     const [authError, setAuthError] = useState('');
+    const [authInfo, setAuthInfo] = useState('');
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [resetEmailSent, setResetEmailSent] = useState(false);
 
     const handleGoogleSignIn = async () => {
         setAuthError('');
+        setAuthInfo('');
         setIsSubmitting(true);
         try {
             const provider = new firebase.auth.GoogleAuthProvider();
@@ -1232,7 +1241,7 @@ const AuthScreen = ({ onAuthSuccess }) => {
         } catch (err) {
             console.error("Google sign-in error:", err);
             if (err.code === 'auth/unauthorized-domain') {
-                setAuthError("Google Sign-In failed: This domain is not authorized in your Firebase Console. If you opened the file directly (file://), Google OAuth requires a web server (like http://localhost). Alternatively, you can use the 'Create Account' / 'Sign In' email fields below!");
+                setAuthError("Google Sign-In failed: This domain isn't authorized in Firebase Console yet (Authentication > Settings > Authorized domains). Use email & password below, or add this domain in Firebase Console.");
             } else if (err.code === 'auth/popup-closed-by-user') {
                 setAuthError("Google sign-in was cancelled.");
             } else {
@@ -1245,27 +1254,20 @@ const AuthScreen = ({ onAuthSuccess }) => {
     const handleEmailAuth = async (e) => {
         if (e) e.preventDefault();
         setAuthError('');
+        setAuthInfo('');
 
-        if (!email.trim() || !password) {
-            setAuthError("Please fill in all required fields.");
+        const cleanEmail = email.trim().toLowerCase();
+        if (!cleanEmail || !password) {
+            setAuthError("Please enter both your email address and password.");
+            return;
+        }
+
+        if (!isValidEmailFormat(cleanEmail)) {
+            setAuthError("Please enter a real, valid email address (e.g. name@gmail.com).");
             return;
         }
 
         if (authMode === 'signup') {
-            const cleanUser = username.trim().toLowerCase();
-            const cleanName = displayName.trim();
-            if (!cleanName) {
-                setAuthError("Please enter your display name.");
-                return;
-            }
-            if (!cleanUser) {
-                setAuthError("Please choose a unique username.");
-                return;
-            }
-            if (!/^[a-zA-Z0-9_]{3,20}$/.test(cleanUser)) {
-                setAuthError("Username must be 3-20 characters long and contain only letters, numbers, and underscores.");
-                return;
-            }
             if (password.length < 6) {
                 setAuthError("Password must be at least 6 characters.");
                 return;
@@ -1273,58 +1275,45 @@ const AuthScreen = ({ onAuthSuccess }) => {
 
             setIsSubmitting(true);
             try {
-                // Pre-check if username is taken (if Firestore is online)
-                try {
-                    const userDoc = await db.collection('usernames').doc(cleanUser).get();
-                    if (userDoc && userDoc.exists) {
-                        setAuthError(`The username @${cleanUser} is already taken. Please choose another.`);
-                        setIsSubmitting(false);
-                        return;
-                    }
-                } catch (checkErr) {
-                    console.warn("Username pre-check notice:", checkErr);
-                }
-
-                // Create user in Firebase Auth
-                const userCred = await auth.createUserWithEmailAndPassword(email.trim(), password);
+                const userCred = await auth.createUserWithEmailAndPassword(cleanEmail, password);
                 const user = userCred.user;
                 const isUserAdmin = user.uid === ADMIN_UID || (user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
 
                 try {
-                    await db.collection('usernames').doc(cleanUser).set({
-                        uid: user.uid,
-                        username: cleanUser,
-                        createdAt: firebase.firestore.FieldValue.serverTimestamp()
-                    });
-                } catch (e) {
-                    console.warn("Could not save username doc:", e);
+                    await user.sendEmailVerification();
+                } catch (verErr) {
+                    console.warn("Verification email notice:", verErr);
                 }
 
-                const profileData = {
+                const baseProfile = {
                     uid: user.uid,
                     email: user.email,
-                    displayName: cleanName,
-                    username: cleanUser,
+                    displayName: user.displayName || cleanEmail.split('@')[0],
+                    username: '',
+                    emailVerified: Boolean(user.emailVerified),
                     role: isUserAdmin ? 'admin' : 'user',
                     createdAt: firebase.firestore.FieldValue.serverTimestamp()
                 };
 
                 try {
-                    await db.collection('users').doc(user.uid).set(profileData);
-                    await user.updateProfile({ displayName: cleanName });
+                    await db.collection('users').doc(user.uid).set(baseProfile, { merge: true });
                 } catch (e) {
-                    console.warn("Could not save profile doc:", e);
+                    console.warn("Could not save initial profile doc:", e);
                 }
 
-                if (onAuthSuccess) onAuthSuccess(user, profileData);
+                if (onAuthSuccess) onAuthSuccess(user, baseProfile);
             } catch (err) {
                 console.error("Sign up error:", err);
                 if (err.code === 'auth/email-already-in-use') {
-                    setAuthError("This email address is already registered. Please switch to 'Sign In' or use a different email.");
+                    // Email is already registered -> switch to Sign In so the user can log in directly
+                    setAuthMode('signin');
+                    setAuthInfo("This email is already registered. We switched you to Sign In—enter your password to log in.");
+                } else if (err.code === 'auth/invalid-email') {
+                    setAuthError("That email address is not valid. Please check and enter a real email.");
                 } else if (err.code === 'auth/operation-not-allowed') {
-                    setAuthError("Email/Password sign-in is not enabled in Firebase Console. Go to Authentication > Sign-in method and enable 'Email/Password'.");
+                    setAuthError("Email/Password sign-in is disabled in Firebase Console. Enable it under Authentication > Sign-in method.");
                 } else if (err.code === 'auth/weak-password') {
-                    setAuthError("Password is too weak. Please use at least 6 characters.");
+                    setAuthError("Password is too weak. Use at least 6 characters.");
                 } else {
                     setAuthError(err.message || "Failed to create account.");
                 }
@@ -1333,7 +1322,7 @@ const AuthScreen = ({ onAuthSuccess }) => {
         } else {
             setIsSubmitting(true);
             try {
-                const userCred = await auth.signInWithEmailAndPassword(email.trim(), password);
+                const userCred = await auth.signInWithEmailAndPassword(cleanEmail, password);
                 const user = userCred.user;
                 let profile = null;
                 try {
@@ -1344,11 +1333,13 @@ const AuthScreen = ({ onAuthSuccess }) => {
             } catch (err) {
                 console.error("Sign in error:", err);
                 if (err.code === 'auth/invalid-credential' || err.code === 'auth/user-not-found' || err.code === 'auth/wrong-password') {
-                    setAuthError("Incorrect email or password. If you haven't registered this account yet, click 'Create Account' above. If your account uses Google, click 'Continue with Google'.");
+                    setAuthError("Incorrect email or password. If you don't have an account yet, click 'Create Account' above.");
+                } else if (err.code === 'auth/invalid-email') {
+                    setAuthError("Please enter a valid email address.");
                 } else if (err.code === 'auth/operation-not-allowed') {
-                    setAuthError("Email/Password sign-in is not enabled in Firebase Console. Go to Authentication > Sign-in method to enable it.");
+                    setAuthError("Email/Password sign-in is disabled in Firebase Console. Enable it under Authentication > Sign-in method.");
                 } else {
-                    setAuthError(err.message || "Invalid email or password.");
+                    setAuthError(err.message || "Could not sign in.");
                 }
                 setIsSubmitting(false);
             }
@@ -1356,12 +1347,13 @@ const AuthScreen = ({ onAuthSuccess }) => {
     };
 
     const handleForgotPassword = async () => {
-        if (!email.trim()) {
-            setAuthError("Please enter your email address above to receive a password reset link.");
+        const cleanEmail = email.trim().toLowerCase();
+        if (!cleanEmail || !isValidEmailFormat(cleanEmail)) {
+            setAuthError("Please enter a valid email address above to receive a password reset link.");
             return;
         }
         try {
-            await auth.sendPasswordResetEmail(email.trim());
+            await auth.sendPasswordResetEmail(cleanEmail);
             setResetEmailSent(true);
             setAuthError('');
             setTimeout(() => setResetEmailSent(false), 5000);
@@ -1379,21 +1371,21 @@ const AuthScreen = ({ onAuthSuccess }) => {
                     </div>
                     <h2 className="text-2xl font-black text-gray-900 tracking-tight">Exam Portal</h2>
                     <p className="mt-1 text-xs text-gray-500">
-                        {authMode === 'signin' ? 'Sign in to access your exams and trial history' : 'Create an account to start taking and creating exams'}
+                        {authMode === 'signin' ? 'Sign in to access your exams and trial history' : 'Create an account with a real email to get started'}
                     </p>
 
                     <div className="mt-5 grid grid-cols-2 p-1 bg-gray-100 rounded-xl">
                         <button
                             type="button"
-                            onClick={() => { setAuthMode('signin'); setAuthError(''); }}
-                            className={`py-2 text-xs font-bold rounded-lg transition-all ${authMode === 'signin' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+                            onClick={() => { setAuthMode('signin'); setAuthError(''); setAuthInfo(''); }}
+                            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${authMode === 'signin' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
                         >
                             Sign In
                         </button>
                         <button
                             type="button"
-                            onClick={() => { setAuthMode('signup'); setAuthError(''); }}
-                            className={`py-2 text-xs font-bold rounded-lg transition-all ${authMode === 'signup' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
+                            onClick={() => { setAuthMode('signup'); setAuthError(''); setAuthInfo(''); }}
+                            className={`py-2 text-xs font-bold rounded-lg transition-all cursor-pointer ${authMode === 'signup' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-900'}`}
                         >
                             Create Account
                         </button>
@@ -1422,6 +1414,12 @@ const AuthScreen = ({ onAuthSuccess }) => {
                         <div className="flex-1 h-px bg-gray-200"></div>
                     </div>
 
+                    {authInfo && (
+                        <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl text-xs text-blue-800 font-medium leading-relaxed">
+                            {authInfo}
+                        </div>
+                    )}
+
                     {authError && (
                         <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 font-medium leading-relaxed">
                             {authError}
@@ -1435,40 +1433,6 @@ const AuthScreen = ({ onAuthSuccess }) => {
                     )}
 
                     <form onSubmit={handleEmailAuth} className="space-y-3">
-                        {authMode === 'signup' && (
-                            <>
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">Full Name</label>
-                                    <input
-                                        type="text"
-                                        required
-                                        value={displayName}
-                                        onChange={(e) => setDisplayName(e.target.value)}
-                                        placeholder="e.g. Alex Johnson"
-                                        className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                                    />
-                                </div>
-                                <div>
-                                    <label className="block text-xs font-bold text-gray-700 mb-1">
-                                        Unique Username
-                                        <span className="text-[10px] text-gray-400 font-normal ml-1">(for sharing exams)</span>
-                                    </label>
-                                    <div className="relative">
-                                        <span className="absolute left-3 top-2 text-xs font-bold text-gray-400">@</span>
-                                        <input
-                                            type="text"
-                                            required
-                                            value={username}
-                                            onChange={(e) => setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                                            placeholder="alex_j"
-                                            className="w-full pl-7 pr-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none font-medium"
-                                        />
-                                    </div>
-                                    <span className="text-[10px] text-gray-400 mt-0.5 block">3-20 characters: letters, numbers, underscores only.</span>
-                                </div>
-                            </>
-                        )}
-
                         <div>
                             <label className="block text-xs font-bold text-gray-700 mb-1">Email Address</label>
                             <input
@@ -1479,6 +1443,9 @@ const AuthScreen = ({ onAuthSuccess }) => {
                                 placeholder="name@example.com"
                                 className="w-full px-3 py-2 border border-gray-300 rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
                             />
+                            {authMode === 'signup' && (
+                                <span className="text-[10px] text-gray-400 mt-0.5 block">We'll send a verification link to confirm this email exists.</span>
+                            )}
                         </div>
 
                         <div>
@@ -1529,7 +1496,6 @@ const AuthScreen = ({ onAuthSuccess }) => {
 
 const ChooseUsernameModal = ({ user, onComplete }) => {
     const [chosenUsername, setChosenUsername] = useState('');
-    const [name, setName] = useState(user.displayName || '');
     const [error, setError] = useState('');
     const [isSaving, setIsSaving] = useState(false);
 
@@ -1548,36 +1514,43 @@ const ChooseUsernameModal = ({ user, onComplete }) => {
         setIsSaving(true);
         setError('');
         try {
-            const checkDoc = await db.collection('usernames').doc(cleanUser).get();
-            if (checkDoc.exists) {
-                setError(`@${cleanUser} is already taken. Please choose another username.`);
-                setIsSaving(false);
-                return;
-            }
-
             const isUserAdmin = user.uid === ADMIN_UID || (user.email && user.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
-
-            await db.collection('usernames').doc(cleanUser).set({
-                uid: user.uid,
-                username: cleanUser,
-                createdAt: firebase.firestore.FieldValue.serverTimestamp()
-            });
+            const fallbackName = user.displayName || (user.email ? user.email.split('@')[0] : cleanUser);
 
             const profile = {
                 uid: user.uid,
                 email: user.email,
-                displayName: name.trim() || user.displayName || cleanUser,
+                displayName: fallbackName,
                 username: cleanUser,
                 photoURL: user.photoURL || '',
                 role: isUserAdmin ? 'admin' : 'user',
                 createdAt: firebase.firestore.FieldValue.serverTimestamp()
             };
 
-            await db.collection('users').doc(user.uid).set(profile);
+            const usernameRef = db.collection('usernames').doc(cleanUser);
+            const userRef = db.collection('users').doc(user.uid);
+
+            await db.runTransaction(async (transaction) => {
+                const usernameDoc = await transaction.get(usernameRef);
+                if (usernameDoc.exists && usernameDoc.data().uid !== user.uid) {
+                    throw new Error("USERNAME_TAKEN");
+                }
+                transaction.set(usernameRef, {
+                    uid: user.uid,
+                    username: cleanUser,
+                    createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+                transaction.set(userRef, profile, { merge: true });
+            });
+
             onComplete(profile);
         } catch (err) {
             console.error("Error setting username:", err);
-            setError(err.message || "Failed to set username.");
+            if (err.message === "USERNAME_TAKEN") {
+                setError(`@${cleanUser} is already taken. Please choose another username.`);
+            } else {
+                setError(err.message || "Failed to set username.");
+            }
             setIsSaving(false);
         }
     };
@@ -1587,11 +1560,11 @@ const ChooseUsernameModal = ({ user, onComplete }) => {
             <div className="bg-white rounded-2xl shadow-2xl p-6 max-w-sm w-full">
                 <div className="text-center mb-4">
                     <div className="w-12 h-12 mx-auto mb-2 rounded-xl bg-blue-100 text-blue-600 flex items-center justify-center font-bold text-xl">
-
+                        @
                     </div>
-                    <h3 className="text-lg font-bold text-gray-900">Choose Your Username</h3>
+                    <h3 className="text-lg font-bold text-gray-900">Choose a Unique Username</h3>
                     <p className="text-xs text-gray-500 mt-1">
-                        Welcome, {user.displayName || 'Friend'}! Pick a unique username so other users and the admin can share exams with you.
+                        You're signed in! Pick a unique username so others can share exams with you.
                     </p>
                 </div>
 
@@ -1603,24 +1576,15 @@ const ChooseUsernameModal = ({ user, onComplete }) => {
 
                 <form onSubmit={handleSave} className="space-y-3">
                     <div>
-                        <label className="block text-xs font-bold text-gray-700 mb-1">Display Name</label>
-                        <input
-                            type="text"
-                            value={name}
-                            onChange={(e) => setName(e.target.value)}
-                            placeholder="Your full name"
-                            className="w-full px-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none"
-                        />
-                    </div>
-                    <div>
                         <label className="block text-xs font-bold text-gray-700 mb-1">Unique Username</label>
                         <div className="relative">
                             <span className="absolute left-3 top-2 text-xs font-bold text-gray-400">@</span>
                             <input
                                 type="text"
+                                required
                                 value={chosenUsername}
                                 onChange={(e) => setChosenUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, ''))}
-                                placeholder="cool_username"
+                                placeholder="your_username"
                                 className="w-full pl-7 pr-3 py-2 border rounded-xl text-xs focus:ring-2 focus:ring-blue-500 outline-none font-medium"
                             />
                         </div>
@@ -1632,7 +1596,7 @@ const ChooseUsernameModal = ({ user, onComplete }) => {
                         disabled={isSaving}
                         className={`w-full py-2.5 mt-2 text-white font-bold text-xs rounded-xl shadow transition-colors cursor-pointer ${isSaving ? 'bg-gray-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-700'}`}
                     >
-                        {isSaving ? 'Saving Profile...' : 'Complete Registration'}
+                        {isSaving ? 'Saving Username...' : 'Save Username'}
                     </button>
                 </form>
             </div>
@@ -1667,8 +1631,22 @@ function App() {
     const [showChooseUsernameModal, setShowChooseUsernameModal] = useState(false);
     const [googleUserPendingUsername, setGoogleUserPendingUsername] = useState(null);
 
-    // Dashboard Tabs: 'all', 'universal', 'my_exams', 'shared', 'public', 'admin_console'
-    const [dashboardTab, setDashboardTab] = useState('all');
+    // Dashboard Tabs: 'official', 'practice', 'my_exams', 'public', 'shared', 'admin_console'
+    const [dashboardTab, setDashboardTab] = useState('official');
+    const [communityFilter, setCommunityFilter] = useState('qualified'); // 'qualified' | 'pending'
+
+    const isExamQualified = (exam) => {
+        if (exam.adminQualified === true) return true;
+        if (exam.adminQualified === false) return false;
+        // Legacy compatibility: public exams with at least 1 valid question stay visible unless rejected
+        return Array.isArray(exam.questions) && exam.questions.length > 0;
+    };
+
+    const isPracticeFromAdmin = (exam) => {
+        if (exam.isUniversal || exam.collectionSource === 'exams') return false;
+        if (exam.ownerId === currentUser?.uid) return false;
+        return exam.ownerId === ADMIN_UID || exam.sharedFromAdmin === true;
+    };
 
     // Share Modal State
     const [sharingExam, setSharingExam] = useState(null);
@@ -1773,14 +1751,19 @@ function App() {
                 loadUserHistory(user.uid);
                 try {
                     const userDoc = await db.collection('users').doc(user.uid).get();
-                    if (userDoc.exists) {
+                    if (userDoc.exists && userDoc.data()?.username) {
                         setUserProfile(userDoc.data());
+                        setShowChooseUsernameModal(false);
+                        setGoogleUserPendingUsername(null);
                     } else {
+                        setUserProfile(userDoc.exists ? userDoc.data() : null);
                         setGoogleUserPendingUsername(user);
                         setShowChooseUsernameModal(true);
                     }
                 } catch (err) {
                     console.error("Error fetching user profile:", err);
+                    setGoogleUserPendingUsername(user);
+                    setShowChooseUsernameModal(true);
                 }
             } else {
                 setCurrentUser(null);
@@ -3045,6 +3028,37 @@ function App() {
         }
     };
 
+    const handleToggleQualifyExam = async (exam, nextQualifiedState) => {
+        if (!isAdmin || !exam) return;
+
+        if (nextQualifiedState === true) {
+            const hasValidQuestions = Array.isArray(exam.questions) && exam.questions.length > 0;
+            const hasTitle = Boolean(exam.title && exam.title.trim());
+            const hasDuration = Number(exam.durationMinutes) > 0;
+            if (!hasTitle || !hasDuration || !hasValidQuestions) {
+                alert("Cannot qualify exam: it must have a title, a duration greater than 0, and at least 1 question.");
+                return;
+            }
+        }
+
+        const targetCollection = exam.collectionSource === 'userExams' ? 'userExams' : 'exams';
+        try {
+            await db.collection(targetCollection).doc(exam.id).set({
+                adminQualified: nextQualifiedState,
+                qualifiedAt: nextQualifiedState ? firebase.firestore.FieldValue.serverTimestamp() : null,
+                qualifiedBy: nextQualifiedState && currentUser ? currentUser.uid : null
+            }, { merge: true });
+
+            setExams(prev => prev.map(e => e.id === exam.id ? {
+                ...e,
+                adminQualified: nextQualifiedState
+            } : e));
+        } catch (err) {
+            console.error("Error updating exam qualification:", err);
+            alert("Failed to update qualification status: " + err.message);
+        }
+    };
+
     const handleSaveSharing = async () => {
         if (!sharingExam) return;
         setIsSavingShare(true);
@@ -3197,19 +3211,27 @@ function App() {
         if (selectedAdminUserFilter) {
             return exam.ownerId === selectedAdminUserFilter;
         }
-        if (dashboardTab === 'universal') {
+        if (dashboardTab === 'official') {
             return exam.isUniversal || exam.collectionSource === 'exams' || exam.visibility === 'universal';
+        }
+        if (dashboardTab === 'practice') {
+            return isPracticeFromAdmin(exam);
         }
         if (dashboardTab === 'my_exams') {
             return exam.ownerId === currentUser?.uid;
         }
-        if (dashboardTab === 'shared') {
-            return exam.sharedWith && exam.sharedWith.includes(currentUser?.uid) && exam.ownerId !== currentUser?.uid;
-        }
         if (dashboardTab === 'public') {
-            return exam.visibility === 'public' && exam.ownerId !== currentUser?.uid;
+            const isPublicCandidate = exam.visibility === 'public' && exam.ownerId !== currentUser?.uid;
+            if (!isPublicCandidate) return false;
+            if (isAdmin && communityFilter === 'pending') {
+                return !isExamQualified(exam);
+            }
+            return isExamQualified(exam);
         }
-        return true; // 'all'
+        if (dashboardTab === 'shared') {
+            return Array.isArray(exam.sharedWith) && exam.sharedWith.includes(currentUser?.uid) && exam.ownerId !== currentUser?.uid;
+        }
+        return exam.isUniversal || exam.collectionSource === 'exams' || exam.visibility === 'universal';
     });
 
     const filteredExams = tabFilteredExams.filter(exam => {
@@ -3266,12 +3288,17 @@ function App() {
     const allAvailableSubjects = Array.from(new Set([...customSubjects, ...exams.map(e => e.subject).filter(Boolean)]));
 
     // Calculate tab badge counts
+    const pendingPublicCount = exams.filter(
+        e => e.visibility === 'public' && e.ownerId !== currentUser?.uid && !isExamQualified(e)
+    ).length;
+
     const tabCounts = {
-        all: exams.length,
-        universal: exams.filter(e => e.isUniversal || e.collectionSource === 'exams' || e.visibility === 'universal').length,
+        official: exams.filter(e => e.isUniversal || e.collectionSource === 'exams' || e.visibility === 'universal').length,
+        practice: exams.filter(e => isPracticeFromAdmin(e)).length,
         my_exams: exams.filter(e => e.ownerId === currentUser?.uid).length,
-        shared: exams.filter(e => e.sharedWith && e.sharedWith.includes(currentUser?.uid) && e.ownerId !== currentUser?.uid).length,
-        public: exams.filter(e => e.visibility === 'public' && e.ownerId !== currentUser?.uid).length
+        public: exams.filter(e => e.visibility === 'public' && e.ownerId !== currentUser?.uid && isExamQualified(e)).length,
+        pendingPublic: pendingPublicCount,
+        shared: exams.filter(e => Array.isArray(e.sharedWith) && e.sharedWith.includes(currentUser?.uid) && e.ownerId !== currentUser?.uid).length
     };
 
     // Full screen loading indicator while checking auth
@@ -3369,21 +3396,21 @@ function App() {
                     </header>
 
                     {/* Navigation Tabs */}
-                    <div className="mb-5 flex items-center gap-2 overflow-x-auto pb-1 border-b border-gray-200">
+                    <div className="mb-4 flex items-center gap-2 overflow-x-auto pb-2 border-b border-gray-200">
                         <button
-                            onClick={() => { setDashboardTab('all'); setSelectedAdminUserFilter(null); }}
-                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'all' && !selectedAdminUserFilter ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                            onClick={() => { setDashboardTab('official'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'official' && !selectedAdminUserFilter ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
                         >
-                            <span>All Accessible</span>
-                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'all' && !selectedAdminUserFilter ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.all}</span>
+                            <span>Official Exams</span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${dashboardTab === 'official' && !selectedAdminUserFilter ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.official}</span>
                         </button>
 
                         <button
-                            onClick={() => { setDashboardTab('universal'); setSelectedAdminUserFilter(null); }}
-                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'universal' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                            onClick={() => { setDashboardTab('practice'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'practice' ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
                         >
-                            <span>Universal Exams</span>
-                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'universal' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.universal}</span>
+                            <span>Practice Exams</span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${dashboardTab === 'practice' ? 'bg-indigo-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.practice}</span>
                         </button>
 
                         <button
@@ -3391,23 +3418,28 @@ function App() {
                             className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'my_exams' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
                         >
                             <span>My Exams</span>
-                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'my_exams' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.my_exams}</span>
-                        </button>
-
-                        <button
-                            onClick={() => { setDashboardTab('shared'); setSelectedAdminUserFilter(null); }}
-                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'shared' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
-                        >
-                            <span>Shared with Me</span>
-                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'shared' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.shared}</span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${dashboardTab === 'my_exams' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.my_exams}</span>
                         </button>
 
                         <button
                             onClick={() => { setDashboardTab('public'); setSelectedAdminUserFilter(null); }}
-                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'public' ? 'bg-blue-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'public' ? 'bg-purple-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
                         >
                             <span>Community Public</span>
-                            <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${dashboardTab === 'public' ? 'bg-blue-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.public}</span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${dashboardTab === 'public' ? 'bg-purple-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.public}</span>
+                            {isAdmin && tabCounts.pendingPublic > 0 && (
+                                <span className="px-1.5 py-0.5 rounded-full text-[10px] bg-amber-100 text-amber-900 border border-amber-300">
+                                    {tabCounts.pendingPublic} pending
+                                </span>
+                            )}
+                        </button>
+
+                        <button
+                            onClick={() => { setDashboardTab('shared'); setSelectedAdminUserFilter(null); }}
+                            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all shrink-0 flex items-center gap-2 cursor-pointer ${dashboardTab === 'shared' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-gray-600 hover:bg-gray-100 border border-gray-200'}`}
+                        >
+                            <span>Shared with Me</span>
+                            <span className={`px-1.5 py-0.5 rounded-full text-[10px] ${dashboardTab === 'shared' ? 'bg-emerald-700 text-white' : 'bg-gray-100 text-gray-600'}`}>{tabCounts.shared}</span>
                         </button>
 
                         {isAdmin && (
@@ -3419,6 +3451,32 @@ function App() {
                             </button>
                         )}
                     </div>
+
+                    {dashboardTab === 'public' && (
+                        <div className="mb-4 p-3 bg-purple-50/70 border border-purple-200 rounded-xl flex flex-wrap items-center justify-between gap-2 text-xs">
+                            <span className="text-purple-900 font-medium">
+                                Community Public exams are verified for valid questions, title, and timing before public listing.
+                            </span>
+                            {isAdmin && (
+                                <div className="flex items-center gap-1.5">
+                                    <button
+                                        type="button"
+                                        onClick={() => setCommunityFilter('qualified')}
+                                        className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer ${communityFilter === 'qualified' ? 'bg-purple-600 text-white' : 'bg-white text-purple-800 border border-purple-200'}`}
+                                    >
+                                        Qualified ({tabCounts.public})
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => setCommunityFilter('pending')}
+                                        className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer ${communityFilter === 'pending' ? 'bg-amber-600 text-white' : 'bg-white text-amber-800 border border-amber-200'}`}
+                                    >
+                                        Needs Review ({tabCounts.pendingPublic})
+                                    </button>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
                     {/* Admin Console View */}
                     {dashboardTab === 'admin_console' && isAdmin && (
@@ -3542,13 +3600,16 @@ function App() {
                                         onClick={() => setSelectedAdminUserFilter(null)}
                                         className="text-xs text-blue-700 hover:text-blue-900 underline font-semibold cursor-pointer"
                                     >
-                                        Show All Exams
+                                        Clear User Filter
                                     </button>
                                 </div>
                             )}
                         </div>
                     )}
 
+                    {/* Search, Subject Filters & Exam Grid (hidden on Admin Console unless filtering a specific user) */}
+                    {(dashboardTab !== 'admin_console' || Boolean(selectedAdminUserFilter)) && (
+                        <>
                     {/* Search & Subject Filters */}
                     <div className="mb-6 bg-white p-3 rounded-xl border border-gray-200 shadow-sm flex flex-col sm:flex-row gap-3 items-center justify-between">
                         <div className="relative w-full sm:flex-1">
@@ -3584,7 +3645,7 @@ function App() {
                     ) : filteredExams.length === 0 ? (
                         <div className="text-center py-12 bg-white rounded-xl border border-dashed border-gray-300 p-8">
                             <p className="text-gray-500 mb-4">No matching exams found in this view.</p>
-                            <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); setDashboardTab('all'); setSelectedAdminUserFilter(null); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 cursor-pointer">Clear Filters</button>
+                            <button onClick={() => { setSearchQuery(''); setSelectedSubjectFilter('All'); setDashboardTab('official'); setCommunityFilter('qualified'); setSelectedAdminUserFilter(null); }} className="px-4 py-2 bg-gray-200 text-gray-800 text-sm font-medium rounded-md hover:bg-gray-300 cursor-pointer">Clear Filters</button>
                         </div>
                     ) : (
                         <div className="grid gap-4 grid-cols-1 sm:grid-cols-2 md:grid-cols-3">
@@ -4476,6 +4537,9 @@ function App() {
                                 </div>
                             </div>
                         </div>
+                    )}
+
+                    </>
                     )}
 
                     {/* Delete Exam Confirmation Modal */}
